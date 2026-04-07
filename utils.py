@@ -99,7 +99,7 @@ def one_hot_encode(num_classes, class_idx, device):
     :param device: the gpu device that holds the one-hot encoded ground truth label
     :return: one-hot encoded ground truth label
     """
-    return torch.eye(num_classes)[class_idx].to(device)
+    return torch.eye(num_classes, device=class_idx.device)[class_idx].to(device)
 
 
 def preprocessing(num_ways, num_shots, num_queries, batch_size, device):
