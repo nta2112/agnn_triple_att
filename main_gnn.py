@@ -11,7 +11,7 @@ import os
 import random
 import logging
 import argparse
-import imp
+import importlib.util
 
 
 class AGNNTrainer(object):
@@ -489,7 +489,10 @@ def main():
     config_file = args_opt.config
 
     # Set train and test datasets and the corresponding data loaders
-    config = imp.load_source("", config_file).config
+    spec = importlib.util.spec_from_file_location("config_module", config_file)
+    config_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config_module)
+    config = config_module.config
     train_opt = config['train_config']
     eval_opt = config['eval_config']
 
