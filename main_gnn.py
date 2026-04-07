@@ -358,20 +358,13 @@ class AGNNTrainer(object):
             for point_similarity
             in point_similarities]
 
-        # #Q=1
-        query_node_pred_loss = [
-            # self.pred_loss(query_node_pred_generation, query_label.long()).mean()
-            self.pred_loss(query_node_pred_generation.squeeze(), query_label.long().squeeze()).mean()
-            for query_node_pred_generation
-            in query_node_pred_generations_]
-
-        # #Q>1
-        # query_node_pred_loss = []
-        # for query_node_pred_generation in query_node_pred_generations_:
-        #     temp_query_node_pred_generation = query_node_pred_generation.contiguous().view(-1, query_node_pred_generation.shape[-1])
-        #     temp_query_label = query_label.long().contiguous().view(-1, )
-        #     temp_loss = self.pred_loss(temp_query_node_pred_generation, temp_query_label).mean()
-        #     query_node_pred_loss.append(temp_loss)
+        # Calculate prediction loss correctly for any number of queries
+        query_node_pred_loss = []
+        for query_node_pred_generation in query_node_pred_generations_:
+            temp_query_node_pred_generation = query_node_pred_generation.contiguous().view(-1, query_node_pred_generation.shape[-1])
+            temp_query_label = query_label.long().contiguous().view(-1, )
+            temp_loss = self.pred_loss(temp_query_node_pred_generation, temp_query_label).mean()
+            query_node_pred_loss.append(temp_loss)
 
         # train accuracy
         query_node_acc_generations = [
