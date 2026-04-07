@@ -3,6 +3,8 @@ from collections import OrderedDict
 config = OrderedDict()
 
 config['dataset_name'] = 'custom'
+# Đường dẫn tệp tin chia nhãn (Nếu để trống '' thì dùng cấu trúc thư mục)
+config['split_path'] = ''
 # Bạn có thể thay đổi kích thước ảnh ở đây. Mô hình sẽ tự động crop và resize về kích thước này
 config['image_size'] = 84 
 config['num_generation'] = 3

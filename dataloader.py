@@ -235,7 +235,7 @@ class Flowers(data.Dataset):
         return len(self.data)
 
 class CustomImageFolder(data.Dataset):
-    def __init__(self, root, partition='train', category='custom', image_size=84):
+    def __init__(self, root, partition='train', category='custom', image_size=84, split_path=None):
         super(CustomImageFolder, self).__init__()
         self.root = root
         self.partition = partition
@@ -275,11 +275,15 @@ class CustomImageFolder(data.Dataset):
         # Traverse folder list
         import json
         
-        # Check if split.json exists in root
-        split_file = os.path.join(self.root, 'split.json')
-        if os.path.exists(split_file):
-            print("Found split.json, using predefined classes.")
-            with open(split_file, 'r') as f:
+        # Identify split path (fallback to root/split.json if not specified)
+        if split_path is None or not os.path.exists(split_path):
+            split_path_to_use = os.path.join(self.root, 'split.json')
+        else:
+            split_path_to_use = split_path
+            
+        if os.path.exists(split_path_to_use):
+            print("Found split file {}, using predefined classes.".format(split_path_to_use))
+            with open(split_path_to_use, 'r') as f:
                 splits = json.load(f)
             class_names = sorted(splits.get(partition, []))
             base_dir = self.root

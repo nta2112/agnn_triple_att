@@ -140,17 +140,17 @@ class AGNNTrainer(object):
                     query_node_cls_acc_generations[-1]))
 
             # evaluation
-            if self.global_step % self.eval_opt['interval'] == 0:
+            if self.global_step > 0 and self.global_step % self.eval_opt['interval'] == 0:
                 is_best = 0
-                test_acc = self.eval(partition='test')
-                if test_acc > self.test_acc:
+                val_acc = self.eval(partition='val')
+                if val_acc > self.test_acc:
                     is_best = 1
-                    self.test_acc = test_acc
+                    self.test_acc = val_acc
                     self.best_step = self.global_step
 
                 # log evaluation info
-                self.log.info('test_acc : {}         step : {} '.format(test_acc, self.global_step))
-                self.log.info('test_best_acc : {}    step : {}'.format( self.test_acc, self.best_step))
+                self.log.info('val_acc : {}         step : {} '.format(val_acc, self.global_step))
+                self.log.info('best_val_acc : {}    step : {}'.format( self.test_acc, self.best_step))
 
                 # save checkpoints (best and newest)
                 save_checkpoint({
@@ -599,13 +599,12 @@ def main():
 
     if config['dataset_name'] == 'custom':
         img_size = config.get('image_size', 84)
-        dataset_train = dataset(root=args_opt.dataset_root, partition='train', image_size=img_size)
-        dataset_valid = dataset(root=args_opt.dataset_root, partition='val', image_size=img_size)
-        dataset_test = dataset(root=args_opt.dataset_root, partition='test', image_size=img_size)
+        split_path = config.get('split_path', None)
+        dataset_train = dataset(root=args_opt.dataset_root, partition='train', image_size=img_size, split_path=split_path)
+        dataset_valid = dataset(root=args_opt.dataset_root, partition='val', image_size=img_size, split_path=split_path)
     else:
         dataset_train = dataset(root=args_opt.dataset_root, partition='train')
         dataset_valid = dataset(root=args_opt.dataset_root, partition='val')
-        dataset_test = dataset(root=args_opt.dataset_root, partition='test')
 
     train_loader = DataLoader(dataset_train,
                               num_tasks=train_opt['batch_size'],
@@ -619,16 +618,9 @@ def main():
                               num_shots=eval_opt['num_shots'],
                               num_queries=eval_opt['num_queries'],
                               epoch_size=eval_opt['iteration'])
-    test_loader = DataLoader(dataset_test,
-                             num_tasks=eval_opt['batch_size'],
-                             num_ways=eval_opt['num_ways'],
-                             num_shots=eval_opt['num_shots'],
-                             num_queries=eval_opt['num_queries'],
-                             epoch_size=eval_opt['iteration'])
 
     data_loader = {'train': train_loader,
-                   'val': valid_loader,
-                   'test': test_loader}
+                   'val': valid_loader}
 
     # create trainer
     trainer = AGNNTrainer(enc_module=enc_module,
