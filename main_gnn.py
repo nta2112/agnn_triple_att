@@ -159,7 +159,7 @@ class AGNNTrainer(object):
                     'gnn_module_state_dict': self.gnn_module.state_dict(),
                     'test_acc': self.test_acc,
                     'optimizer': self.optimizer.state_dict(),
-                }, is_best, os.path.join(self.arg.checkpoint_dir, self.arg.exp_name))
+                }, is_best, self.arg.checkpoint_dir)
 
 
     def get_features(self, partition='test', log_flag=True):
@@ -491,17 +491,28 @@ def main():
     train_opt = config['train_config']
     eval_opt = config['eval_config']
 
-    args_opt.exp_name = '{}way_{}shot_{}_{}'.format(train_opt['num_ways'],
-                                                    train_opt['num_shots'],
-                                                    config['backbone'],
-                                                    config['dataset_name'])
-    args_opt.exp_name = args_opt.exp_name + args_opt.tag
-    set_logging_config(os.path.join(args_opt.log_dir, args_opt.exp_name))
+    # Handle flexible storage paths
+    args_opt.exp_name = config.get('exp_name', args_opt.exp_name)
+    save_root = config.get('save_root', None)
+    
+    if save_root:
+        # Unified structure: {save_root}/{exp_name}/logs and {save_root}/{exp_name}/checkpoints
+        args_opt.log_dir = os.path.join(save_root, args_opt.exp_name, 'logs')
+        args_opt.checkpoint_dir = os.path.join(save_root, args_opt.exp_name, 'checkpoints')
+        log_path = args_opt.log_dir # logs are stored directly in this dir
+    else:
+        # Fallback to original behavior or config-overridden dirs
+        args_opt.log_dir = config.get('log_dir', args_opt.log_dir)
+        args_opt.checkpoint_dir = config.get('checkpoint_dir', args_opt.checkpoint_dir)
+        log_path = os.path.join(args_opt.log_dir, args_opt.exp_name)
+        args_opt.checkpoint_dir = os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)
+
+    set_logging_config(log_path)
     logger = logging.getLogger('main')
 
     # Load the configuration params of the experiment
     logger.info('Launching experiment from: {}'.format(config_file))
-    logger.info('Generated logs will be saved to: {}'.format(args_opt.log_dir))
+    logger.info('Generated logs will be saved to: {}'.format(log_path))
     logger.info('Generated checkpoints will be saved to: {}'.format(args_opt.checkpoint_dir))
     print()
 
@@ -576,20 +587,20 @@ def main():
         gnn_module = nn.DataParallel(gnn_module, device_ids=range(args_opt.num_gpu), dim=0)
         print('done!\n')
 
-    if not os.path.exists(os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)):
-        os.makedirs(os.path.join(args_opt.checkpoint_dir, args_opt.exp_name))
+    if not os.path.exists(args_opt.checkpoint_dir):
+        os.makedirs(args_opt.checkpoint_dir)
         logger.info('no checkpoint for model: {}, make a new one at {}'.format(
             args_opt.exp_name,
-            os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)))
+            args_opt.checkpoint_dir))
         best_step = 0
     else:
-        if not os.path.exists(os.path.join(args_opt.checkpoint_dir, args_opt.exp_name, 'model_best.pth.tar')):
+        if not os.path.exists(os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar')):
             best_step = 0
         else:
             logger.info('find a checkpoint, loading checkpoint from {}'.format(
-                os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)))
-            best_checkpoint = torch.load(os.path.join(args_opt.checkpoint_dir, args_opt.exp_name, 'model_best.pth.tar'))
-
+                args_opt.checkpoint_dir))
+            best_checkpoint = torch.load(os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar'))
+ 
             logger.info('best model pack loaded')
             best_step = best_checkpoint['iteration']
             enc_module.load_state_dict(best_checkpoint['enc_module_state_dict'])
