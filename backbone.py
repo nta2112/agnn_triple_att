@@ -210,12 +210,19 @@ class ResNet50Pretrained(nn.Module):
         self.emb_size = emb_size
         self.layer_second = nn.Sequential(
             nn.Linear(in_features=1024 * 5 * 5, out_features=self.emb_size, bias=True),
-            nn.BatchNorm1d(self.emb_size)
+            nn.LayerNorm(self.emb_size)
         )
         self.layer_last = nn.Sequential(
             nn.Linear(in_features=2048, out_features=self.emb_size, bias=True),
-            nn.BatchNorm1d(self.emb_size)
+            nn.LayerNorm(self.emb_size)
         )
+
+    def train(self, mode=True):
+        super().train(mode)
+        # Khóa toàn bộ BatchNorm2d của ResNet để không làm hỏng trọng số ImageNet vì Batch Size = 1
+        for m in self.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                m.eval()
 
     def forward(self, input_data):
         stem = self.features_stem(input_data)
