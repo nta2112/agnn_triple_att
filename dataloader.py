@@ -303,7 +303,11 @@ class CustomImageFolder(data.Dataset):
         for cname in class_names:
             cpath = os.path.join(base_dir, cname)
             if not os.path.exists(cpath):
-                continue
+                # Thử tìm trong thư mục con (ví dụ images/train/classA)
+                cpath = os.path.join(base_dir, partition, cname)
+                if not os.path.exists(cpath):
+                    print("WARNING: Class directory not found: {} or {}".format(os.path.join(base_dir, cname), cpath))
+                    continue
             for fname in sorted(os.listdir(cpath)):
                 if any(fname.lower().endswith(ext) for ext in img_extensions):
                     data.append(os.path.join(cpath, fname))
@@ -314,6 +318,10 @@ class CustomImageFolder(data.Dataset):
         self.labels = label
         self.full_class_list = list(np.unique(np.array(self.labels))) if len(data) > 0 else []
         self.label2ind = buildLabelIndex(self.labels)
+        
+        print("Loaded partition '{}' with {} classes and {} images.".format(partition, len(self.full_class_list), len(self.data)))
+        if len(self.full_class_list) == 0:
+            raise ValueError(f"Không tìm thấy bất kỳ ảnh nào cho tập {partition}! Vui lòng kiểm tra lại đường dẫn dataset_root và nội dung file Txt/Json.")
 
     def __getitem__(self, index):
         path, label = self.data[index], self.labels[index]
