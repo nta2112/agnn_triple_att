@@ -501,8 +501,6 @@ def main():
                                                     config['backbone'],
                                                     config['dataset_name'])
     args_opt.exp_name = args_opt.exp_name + args_opt.tag
-    train_opt['num_queries'] = 1
-    eval_opt['num_queries'] = 1
     set_logging_config(os.path.join(args_opt.log_dir, args_opt.exp_name))
     logger = logging.getLogger('main')
 

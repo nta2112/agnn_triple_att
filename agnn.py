@@ -135,11 +135,11 @@ class PointSimilarity2(nn.Module):
         kval = int(vp_last_gen.shape[1]*(1.0-self.ratio))
         topk, indices = torch.topk(ep_ij, kval, dim=2, largest=True)
         mask = torch.zeros(*ep_ij.shape, device=ep_last_gen.device) 
-        mask = mask.scatter(1, indices, 1)        # mark valueable nodes
+        mask = mask.scatter(2, indices, 1.0)        # mark valueable nodes
         ep_ij = ep_ij * mask                      # only keep the weights of these nodes
  
         ep_ij = F.normalize(ep_ij, p=1, dim=-1) * ep_last_gen_sum 
-        diagonal_reverse_mask = torch.eye(vp_last_gen.size(1)).unsqueeze(0).cuda().to(ep_last_gen.device)
+        diagonal_reverse_mask = torch.eye(vp_last_gen.size(1)).unsqueeze(0).to(ep_last_gen.device)
         ep_ij += (diagonal_reverse_mask + 1e-6)
         ep_ij /= torch.sum(ep_ij, dim=2).unsqueeze(-1)
         node_similarity_l2 = -torch.sum(vp_similarity, 3)
@@ -369,12 +369,14 @@ class AGNN(nn.Module):
 
         # Label initialization
         [b, nk] = tr_label.size()
+        num_query_nodes = point_node.size(1) - nk
+        num_ways = 5
         tr_label = tr_label.reshape(-1).unsqueeze(1)   #b*1*NK
-        one_hot = torch.zeros((b*nk,5),device=point_node.device)
+        one_hot = torch.zeros((b*nk, num_ways),device=point_node.device)
         one_hot.scatter_(1,tr_label,1)
-        one_hot_fin = one_hot.reshape(b,nk,5)     
-        zero_pad = torch.zeros((b, 5, 5),device= point_node.device).fill_(1.0/5) # zero-init or avg-init
-        # zero_pad = torch.zeros((b, 5, 5),device= point_node.device).fill_(0.0) # zero-init or avg-init
+        one_hot_fin = one_hot.reshape(b,nk,num_ways)     
+        zero_pad = torch.zeros((b, num_query_nodes, num_ways),device= point_node.device).fill_(1.0/num_ways) # zero-init or avg-init
+        # zero_pad = torch.zeros((b, num_query_nodes, num_ways),device= point_node.device).fill_(0.0) # zero-init or avg-init
 
         #Label self-attenion
         lab_new = torch.cat([one_hot_fin,zero_pad], dim=1)  
