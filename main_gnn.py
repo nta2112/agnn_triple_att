@@ -448,7 +448,7 @@ class AGNNTrainer(object):
 def main():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--device', type=str, default='cuda:3',
+    parser.add_argument('--device', type=str, default='cuda:0',
                         help='gpu device number of using')
 
     parser.add_argument('--config', type=str, default=os.path.join('.', 'config', '5way_1shot_resnet12_mini-imagenet.py'),
