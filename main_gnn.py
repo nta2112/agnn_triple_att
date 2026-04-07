@@ -491,8 +491,15 @@ def main():
     train_opt = config['train_config']
     eval_opt = config['eval_config']
 
+    # Define default experiment name
+    default_exp_name = '{}way_{}shot_{}_{}'.format(train_opt['num_ways'],
+                                                    train_opt['num_shots'],
+                                                    config['backbone'],
+                                                    config['dataset_name'])
+    default_exp_name = default_exp_name + args_opt.tag
+
     # Handle flexible storage paths
-    args_opt.exp_name = config.get('exp_name', args_opt.exp_name)
+    args_opt.exp_name = config.get('exp_name', default_exp_name)
     save_root = config.get('save_root', None)
     
     if save_root:
