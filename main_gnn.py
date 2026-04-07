@@ -179,43 +179,44 @@ class AGNNTrainer(object):
 
         query_edge_loss_generations = []
         query_node_cls_acc_generations = []
-        # main training loop, batch size is the number of tasks
-        for current_iteration, batch in enumerate(self.data_loader[partition]()):
+        # set as eval mode
+        self.enc_module.eval()
+        self.gnn_module.eval()
 
-            if current_iteration == 0:
-                # initialize nodes and edges for dual graph model
-                support_data, support_label, query_data, query_label, all_data, all_label_in_edge, node_feature_gd, \
-                edge_feature_gp = initialize_nodes_edges(batch,
-                                                        num_supports,
-                                                        self.tensors,
-                                                        self.eval_opt['batch_size'],
-                                                        self.eval_opt['num_queries'],
-                                                        self.eval_opt['num_ways'],
-                                                        self.arg.device)
+        with torch.no_grad():
+            # main training loop, batch size is the number of tasks
+            for current_iteration, batch in enumerate(self.data_loader[partition]()):
 
-                # set as eval mode
-                self.enc_module.eval()
-                self.gnn_module.eval()
+                if current_iteration == 0:
+                    # initialize nodes and edges for dual graph model
+                    support_data, support_label, query_data, query_label, all_data, all_label_in_edge, node_feature_gd, \
+                    edge_feature_gp = initialize_nodes_edges(batch,
+                                                            num_supports,
+                                                            self.tensors,
+                                                            self.eval_opt['batch_size'],
+                                                            self.eval_opt['num_queries'],
+                                                            self.eval_opt['num_ways'],
+                                                            self.arg.device)
 
-                last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
+                    last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
 
 
-                point_similarity, _ , node_features = self.gnn_module(second_last_layer_data,
-                                                last_layer_data,
-                                                node_feature_gd,
-                                                edge_feature_gp,
-                                                support_label)
-                query_node_cls_acc_generations, query_edge_loss_generations = \
-                self.compute_eval_loss_pred(query_edge_loss_generations,
-                                            query_node_cls_acc_generations,
-                                            all_label_in_edge,
-                                            point_similarity,
-                                            query_edge_mask,
-                                            evaluation_mask,
-                                            num_supports,
-                                            support_label,
-                                            query_label)
-                break
+                    point_similarity, _ , node_features = self.gnn_module(second_last_layer_data,
+                                                    last_layer_data,
+                                                    node_feature_gd,
+                                                    edge_feature_gp,
+                                                    support_label)
+                    query_node_cls_acc_generations, query_edge_loss_generations = \
+                    self.compute_eval_loss_pred(query_edge_loss_generations,
+                                                query_node_cls_acc_generations,
+                                                all_label_in_edge,
+                                                point_similarity,
+                                                query_edge_mask,
+                                                evaluation_mask,
+                                                num_supports,
+                                                support_label,
+                                                query_label)
+                    break
 
         return point_similarity, node_features, support_label, query_label
 
@@ -237,42 +238,43 @@ class AGNNTrainer(object):
 
         query_edge_loss_generations = []
         query_node_cls_acc_generations = []
-        # main training loop, batch size is the number of tasks
-        for current_iteration, batch in enumerate(self.data_loader[partition]()):
+        # set as eval mode
+        self.enc_module.eval()
+        self.gnn_module.eval()
 
-            # initialize nodes and edges for dual graph model
-            support_data, support_label, query_data, query_label, all_data, all_label_in_edge, node_feature_gd, \
-            edge_feature_gp = initialize_nodes_edges(batch,
-                                                    num_supports,
-                                                    self.tensors,
-                                                    self.eval_opt['batch_size'],
-                                                    self.eval_opt['num_queries'],
-                                                    self.eval_opt['num_ways'],
-                                                    self.arg.device)
+        with torch.no_grad():
+            # main training loop, batch size is the number of tasks
+            for current_iteration, batch in enumerate(self.data_loader[partition]()):
 
-            # set as eval mode
-            self.enc_module.eval()
-            self.gnn_module.eval()
+                # initialize nodes and edges for dual graph model
+                support_data, support_label, query_data, query_label, all_data, all_label_in_edge, node_feature_gd, \
+                edge_feature_gp = initialize_nodes_edges(batch,
+                                                        num_supports,
+                                                        self.tensors,
+                                                        self.eval_opt['batch_size'],
+                                                        self.eval_opt['num_queries'],
+                                                        self.eval_opt['num_ways'],
+                                                        self.arg.device)
 
-            last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
+                last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
 
-            # run the AGNN model
-            point_similarity, _  = self.gnn_module(second_last_layer_data,
-                                            last_layer_data,
-                                            node_feature_gd,
-                                            edge_feature_gp,
-                                            support_label)
+                # run the AGNN model
+                point_similarity, _  = self.gnn_module(second_last_layer_data,
+                                                last_layer_data,
+                                                node_feature_gd,
+                                                edge_feature_gp,
+                                                support_label)
 
-            query_node_cls_acc_generations, query_edge_loss_generations = \
-                self.compute_eval_loss_pred(query_edge_loss_generations,
-                                            query_node_cls_acc_generations,
-                                            all_label_in_edge,
-                                            point_similarity,
-                                            query_edge_mask,
-                                            evaluation_mask,
-                                            num_supports,
-                                            support_label,
-                                            query_label)
+                query_node_cls_acc_generations, query_edge_loss_generations = \
+                    self.compute_eval_loss_pred(query_edge_loss_generations,
+                                                query_node_cls_acc_generations,
+                                                all_label_in_edge,
+                                                point_similarity,
+                                                query_edge_mask,
+                                                evaluation_mask,
+                                                num_supports,
+                                                support_label,
+                                                query_label)
 
         # logging
         if log_flag:
