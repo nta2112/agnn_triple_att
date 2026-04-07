@@ -184,3 +184,53 @@ class ConvNet(nn.Module):
         out.append(self.layer_last(output_data.view(output_data.size(0), -1)))
         out.append(self.layer_second(output_data0.view(output_data0.size(0), -1)))
         return out
+
+
+class ResNet50Pretrained(nn.Module):
+    """
+    ResNet50 Backbone with pretrained ImageNet weights
+    """
+    def __init__(self, emb_size):
+        super(ResNet50Pretrained, self).__init__()
+        import torchvision.models as models
+        # Load the pretrained ResNet50
+        resnet = models.resnet50(pretrained=True)
+        # Stem and layer1, 2
+        self.features_stem = nn.Sequential(
+            resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool,
+            resnet.layer1, resnet.layer2
+        )
+        self.layer3 = resnet.layer3
+        self.layer4 = resnet.layer4
+        
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.maxpool = nn.AdaptiveMaxPool2d((5, 5))
+        
+        # AGNN required FC layers
+        self.emb_size = emb_size
+        self.layer_second = nn.Sequential(
+            nn.Linear(in_features=1024 * 5 * 5, out_features=self.emb_size, bias=True),
+            nn.BatchNorm1d(self.emb_size)
+        )
+        self.layer_last = nn.Sequential(
+            nn.Linear(in_features=2048, out_features=self.emb_size, bias=True),
+            nn.BatchNorm1d(self.emb_size)
+        )
+
+    def forward(self, input_data):
+        stem = self.features_stem(input_data)
+        inter = self.layer3(stem)  # B, 1024, ~6x6
+        x_out = self.layer4(inter) # B, 2048, ~3x3
+        
+        inter_pool = self.maxpool(inter)
+        inter_flat = inter_pool.view(inter_pool.size(0), -1)
+        inter_embed = self.layer_second(inter_flat)
+        
+        x_pool = self.avgpool(x_out)
+        x_flat = x_pool.view(x_pool.size(0), -1)
+        x_embed = self.layer_last(x_flat)
+        
+        out = []
+        out.append(x_embed)
+        out.append(inter_embed)
+        return out

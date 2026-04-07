@@ -1,4 +1,4 @@
-from backbone import ResNet12, ConvNet
+from backbone import ResNet12, ConvNet, ResNet50Pretrained
 from agnn import AGNN
 from utils import set_logging_config, adjust_learning_rate, save_checkpoint, allocate_tensors, preprocessing, \
     initialize_nodes_edges, backbone_two_stage_initialization, one_hot_encode
@@ -550,6 +550,9 @@ def main():
     if config['backbone'] == 'resnet12':
         enc_module = ResNet12(emb_size=config['emb_size'], cifar_flag=cifar_flag)
         print('Backbone: ResNet12')
+    elif config['backbone'] == 'resnet50':
+        enc_module = ResNet50Pretrained(emb_size=config['emb_size'])
+        print('Backbone: ResNet50 Pretrained ImageNet')
     elif config['backbone'] == 'convnet':
         enc_module = ConvNet(emb_size=config['emb_size'], cifar_flag=cifar_flag)
         print('Backbone: ConvNet')
