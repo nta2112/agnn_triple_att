@@ -12,6 +12,7 @@ import random
 import logging
 import argparse
 import importlib.util
+import shutil
 
 
 class AGNNTrainer(object):
@@ -143,6 +144,7 @@ class AGNNTrainer(object):
             if self.global_step > 0 and self.global_step % self.eval_opt['interval'] == 0:
                 is_best = 0
                 val_acc = self.eval(partition='val')
+                torch.cuda.empty_cache() # Clear cache after evaluation to free up VRAM
                 if val_acc > self.test_acc:
                     is_best = 1
                     self.test_acc = val_acc
@@ -515,6 +517,13 @@ def main():
         args_opt.checkpoint_dir = os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)
 
     set_logging_config(log_path)
+    
+    # Copy config file to log directory for reproducibility
+    try:
+        shutil.copy(config_file, os.path.join(log_path, os.path.basename(config_file)))
+    except Exception as e:
+        print(f"Warning: Could not copy config file: {e}")
+        
     logger = logging.getLogger('main')
 
     # Load the configuration params of the experiment
