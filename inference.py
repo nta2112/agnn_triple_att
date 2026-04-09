@@ -126,7 +126,12 @@ def main():
     # 6. Inference
     tensors = allocate_tensors()
     # Mock batch for initialize_nodes_edges
-    batch = (support_data, support_label, query_data, query_label)
+    # IMPORTANT: We use unsqueeze(0) to add a dummy "tnt-batch" dimension 
+    # because initialize_nodes_edges in utils.py calls .squeeze(0) immediately.
+    batch = (support_data.unsqueeze(0), 
+             support_label.unsqueeze(0), 
+             query_data.unsqueeze(0), 
+             query_label.unsqueeze(0))
     
     with torch.no_grad():
         _, support_label_node, _, _, all_data, _, node_feature_gd, edge_feature_gp = \
