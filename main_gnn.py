@@ -456,7 +456,7 @@ def main():
                         help='path that checkpoint will be saved and loaded. '
                              'It is assumed that the checkpoint file is placed under the directory ./checkpoints')
 
-    parser.add_argument('--num_gpu', type=int, default=1,
+    parser.add_argument('--num_gpu', type=int, default=torch.cuda.device_count(),
                         help='number of gpu')
 
     parser.add_argument('--display_step', type=int, default=200,
@@ -615,7 +615,9 @@ def main():
         else:
             logger.info('find a checkpoint, loading checkpoint from {}'.format(
                 args_opt.checkpoint_dir))
-            best_checkpoint = torch.load(os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar'))
+            best_checkpoint = torch.load(os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar'), 
+                                         map_location=args_opt.device, 
+                                         weights_only=False)
  
             logger.info('best model pack loaded')
             best_step = best_checkpoint['iteration']

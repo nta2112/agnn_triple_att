@@ -178,25 +178,37 @@ def initialize_nodes_edges(batch, num_supports, tensors, batch_size, num_queries
            node_feature_gd, edge_feature_gp
 
 
-def backbone_two_stage_initialization(full_data, encoder):
+def backbone_two_stage_initialization(full_data, encoder, chunk_size=32):
     """
-    encode raw data by backbone network
-    :param full_data: raw data
-    :param encoder: backbone network
+    encode raw data by backbone network with vectorized chunks to optimize GPU utilization
+    :param full_data: raw data (batch_size, num_samples, 3, H, W)
+    :param encoder: backbone network (DataParallel)
+    :param chunk_size: how many images per task to process in one GPU forward pass
     :return: last layer logits from backbone network
              second last layer logits from backbone network
     """
-    # encode data
-    last_layer_data_temp = []
-    second_last_layer_data_temp = []
-    for data in full_data.chunk(full_data.size(1), dim=1):
-        # the encode step
-        encoded_result = encoder(data.squeeze(1))
-        # prepare for two stage initialization of DPGN
-        last_layer_data_temp.append(encoded_result[0])
-        second_last_layer_data_temp.append(encoded_result[1])
-    # last_layer_data: (batch_size, num_samples, embedding dimension)
-    last_layer_data = torch.stack(last_layer_data_temp, dim=1)
-    # second_last_layer_data: (batch_size, num_samples, embedding dimension)
-    second_last_layer_data = torch.stack(second_last_layer_data_temp, dim=1)
+    batch_size, num_samples, c, h, w = full_data.size()
+
+    # Reshape: (batch_size * num_samples, 3, H, W)
+    reshaped_data = full_data.view(-1, c, h, w)
+    
+    last_layer_data_all = []
+    second_last_layer_data_all = []
+
+    # Process in chunks to avoid OOM while still utilizing DataParallel effectively
+    # DataParallel will split this chunk across all available GPUs
+    actual_chunk_size = chunk_size * batch_size
+    for i in range(0, reshaped_data.size(0), actual_chunk_size):
+        chunk = reshaped_data[i:i + actual_chunk_size]
+        
+        # The encode step
+        encoded_result = encoder(chunk)
+        
+        last_layer_data_all.append(encoded_result[0])
+        second_last_layer_data_all.append(encoded_result[1])
+
+    # Concatenate and reshape back to (batch_size, num_samples, emb_size)
+    last_layer_data = torch.cat(last_layer_data_all, dim=0).view(batch_size, num_samples, -1)
+    second_last_layer_data = torch.cat(second_last_layer_data_all, dim=0).view(batch_size, num_samples, -1)
+    
     return last_layer_data, second_last_layer_data
