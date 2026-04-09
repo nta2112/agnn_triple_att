@@ -134,8 +134,11 @@ def main():
              query_label.unsqueeze(0))
     
     with torch.no_grad():
+        # IMPORTANT: We pass num_ways=1 and num_queries=num_queries (total) 
+        # to ensure utils.py calculates the correct total samples (support + query).
+        # utils.py uses (num_ways * num_queries) to determine the query node count.
         _, support_label_node, _, _, all_data, _, node_feature_gd, edge_feature_gp = \
-            initialize_nodes_edges(batch, num_total_supports, tensors, 1, num_queries, num_ways, args.device)
+            initialize_nodes_edges(batch, num_total_supports, tensors, 1, num_queries, 1, args.device)
         
         all_data = all_data.to(args.device)
         node_feature_gd = node_feature_gd.to(args.device)
