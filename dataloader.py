@@ -344,7 +344,7 @@ class DataLoader:
     """
     The dataloader of DPGN model for MiniImagenet dataset
     """
-    def __init__(self, dataset, num_tasks, num_ways, num_shots, num_queries, epoch_size, num_workers=8, batch_size=1):
+    def __init__(self, dataset, num_tasks, num_ways, num_shots, num_queries, epoch_size, num_workers=2, batch_size=1):
 
         self.dataset = dataset
         self.num_tasks = num_tasks

@@ -44,7 +44,3 @@ eval_opt['interval'] = 100 # Test mô hình sau mỗi 100 steps
 
 config['train_config'] = train_opt
 config['eval_config'] = eval_opt
-
-
-
-
