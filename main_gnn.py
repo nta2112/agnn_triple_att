@@ -513,9 +513,12 @@ def main():
         # Fallback to original behavior or config-overridden dirs
         args_opt.log_dir = config.get('log_dir', args_opt.log_dir)
         args_opt.checkpoint_dir = config.get('checkpoint_dir', args_opt.checkpoint_dir)
-        args_opt.log_step = config.get('log_step', args_opt.log_step)
         log_path = os.path.join(args_opt.log_dir, args_opt.exp_name)
         args_opt.checkpoint_dir = os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)
+
+    # Always override log steps from config if present, regardless of save_root
+    args_opt.log_step = config.get('log_step', args_opt.log_step)
+    args_opt.display_step = config.get('display_step', args_opt.display_step)
 
     set_logging_config(log_path)
     
