@@ -421,7 +421,7 @@ class DataLoader:
             elem_list=range(self.epoch_size), load=load_function)
         data_loader = tnt_dataset.parallel(
             batch_size=self.batch_size,
-            num_workers=(1 if self.is_eval_mode else self.num_workers),
+            num_workers=self.num_workers,
             shuffle=(False if self.is_eval_mode else True))
         return data_loader
 
