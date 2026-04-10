@@ -513,6 +513,7 @@ def main():
         # Fallback to original behavior or config-overridden dirs
         args_opt.log_dir = config.get('log_dir', args_opt.log_dir)
         args_opt.checkpoint_dir = config.get('checkpoint_dir', args_opt.checkpoint_dir)
+        args_opt.log_step = config.get('log_step', args_opt.log_step)
         log_path = os.path.join(args_opt.log_dir, args_opt.exp_name)
         args_opt.checkpoint_dir = os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)
 

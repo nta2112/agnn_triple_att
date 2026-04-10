@@ -20,6 +20,7 @@ config['backbone'] = 'resnet50'
 # Cấu hình lưu trữ (Tùy chọn)
 config['save_root'] = '' # Thư mục gốc để lưu logs và checkpoints
 config['exp_name'] = '' # Tên thí nghiệm cụ thể (nếu muốn đặt tên riêng)
+config['log_step'] = 100 # In thông tin huấn luyện sau mỗi 100 steps
 
 train_opt = OrderedDict()
 train_opt['num_ways'] = 5
