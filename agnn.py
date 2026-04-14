@@ -69,13 +69,14 @@ class PointSimilarity_Pre(nn.Module):
 
 
 class PointSimilarity2(nn.Module):
-    def __init__(self, in_c, base_c, dropout=0.0, layer=1):
+    def __init__(self, in_c, base_c, dropout=0.0, layer=1, use_neigh_att=True):
         """
         Point Similarity (see paper 3.2.1) Vp_(l-1) -> Ep_(l)
         :param in_c: number of input channel
         :param base_c: number of base channel
         :param device: the gpu device stores tensors
         :param dropout: dropout rate
+        :param use_neigh_att: if True, apply neighbor attention via top-k sparsity (ablation: neigh_att)
         """
         super(PointSimilarity2, self).__init__()
         self.in_c = in_c
@@ -102,6 +103,8 @@ class PointSimilarity2(nn.Module):
 
         # flexible sparsity ratio
         self.ratio = 0.1 * layer
+        # ablation flag: whether to use neighbor attention (top-k sparsity)
+        self.use_neigh_att = use_neigh_att
 
 
     def forward(self, vp_last_gen, ep_last_gen, distance_metric):
@@ -131,19 +134,20 @@ class PointSimilarity2(nn.Module):
         # layer memory attention (edge memory)
         ep_ij = ep_ij.squeeze(1) * ep_last_gen
 
-        # neighbor attention via sparsity
-        kval = int(vp_last_gen.shape[1]*(1.0-self.ratio))
-        topk, indices = torch.topk(ep_ij, kval, dim=2, largest=True)
-        mask = torch.zeros(*ep_ij.shape, device=ep_last_gen.device) 
-        mask = mask.scatter(2, indices, 1.0)        # mark valueable nodes
-        ep_ij = ep_ij * mask                      # only keep the weights of these nodes
- 
-        ep_ij = F.normalize(ep_ij, p=1, dim=-1) * ep_last_gen_sum 
+        if self.use_neigh_att:
+            # neighbor attention via sparsity (ablation: neigh_att)
+            kval = int(vp_last_gen.shape[1]*(1.0-self.ratio))
+            topk, indices = torch.topk(ep_ij, kval, dim=2, largest=True)
+            mask = torch.zeros(*ep_ij.shape, device=ep_last_gen.device)
+            mask = mask.scatter(2, indices, 1.0)        # mark valuable nodes
+            ep_ij = ep_ij * mask                       # only keep the weights of these nodes
+
+        ep_ij = F.normalize(ep_ij, p=1, dim=-1) * ep_last_gen_sum
         diagonal_reverse_mask = torch.eye(vp_last_gen.size(1)).unsqueeze(0).to(ep_last_gen.device)
         ep_ij += (diagonal_reverse_mask + 1e-6)
         ep_ij /= torch.sum(ep_ij, dim=2).unsqueeze(-1)
         node_similarity_l2 = -torch.sum(vp_similarity, 3)
-        return ep_ij, node_similarity_l2        
+        return ep_ij, node_similarity_l2
 
 
 class D2PAgg(nn.Module):
@@ -317,7 +321,8 @@ class MultiHeadAttention2(nn.Module):
         return output
     
 class AGNN(nn.Module):
-    def __init__(self, num_generations, dropout, num_support_sample, num_sample, loss_indicator, point_metric):
+    def __init__(self, num_generations, dropout, num_support_sample, num_sample, loss_indicator, point_metric,
+                 ablation_mode='full'):
         """
         AGNN model
         :param num_generations: number of total generations
@@ -326,7 +331,9 @@ class AGNN(nn.Module):
         :param num_sample: number of sample
         :param loss_indicator: indicator of what losses are using
         :param point_metric: metric for distance in the graph
-
+        :param ablation_mode: ablation study flag. 'full' for the complete model.
+                              Use '|' to combine multiple flags, e.g. 'no_self_att|no_mem_att'.
+                              Supported flags: 'no_self_att', 'no_neigh_att', 'no_mem_att'.
         """
         super(AGNN, self).__init__()
         self.generation = num_generations
@@ -336,19 +343,37 @@ class AGNN(nn.Module):
         self.loss_indicator = loss_indicator
         self.point_metric = point_metric
 
-        self.fusion = nn.Conv2d(2,1, kernel_size=(1,1), stride=(1,1)) 
-        self.slf_attn = MultiHeadAttention(1, 128, 128, dropout=0.5) 
+        # Parse ablation flags (set-based for O(1) lookup)
+        if ablation_mode == 'full':
+            self.ablation_flags = set()
+        else:
+            self.ablation_flags = set(ablation_mode.split('|'))
+
+        self.fusion = nn.Conv2d(2, 1, kernel_size=(1,1), stride=(1,1))
+        self.slf_attn = MultiHeadAttention(1, 128, 128, dropout=0.5)
 
         P_Sim = PointSimilarity_Pre(128, 128, dropout=self.dropout)
-        self.dim = 128 + 5
         add_dim = 32
+        use_neigh_att = 'no_neigh_att' not in self.ablation_flags
+        use_mem_att   = 'no_mem_att'   not in self.ablation_flags
+
         self.add_module('initial_edge', P_Sim)
+        current_dim = 128 + 5  # initial node dim after label concat
         for l in range(self.generation):
-            D2P = D2PAgg(self.dim*2, add_dim, dropout=self.dropout if l < self.generation-1 else 0.0)
-            P_Sim = PointSimilarity2(self.dim, self.dim, dropout=self.dropout if l < self.generation-1 else 0.0, layer=l)
+            D2P = D2PAgg(current_dim * 2, add_dim,
+                         dropout=self.dropout if l < self.generation - 1 else 0.0)
+            P_Sim = PointSimilarity2(current_dim, current_dim,
+                                     dropout=self.dropout if l < self.generation - 1 else 0.0,
+                                     layer=l,
+                                     use_neigh_att=use_neigh_att)
             self.add_module('distribution2point_generation_{}'.format(l), D2P)
             self.add_module('point_sim_generation_{}'.format(l), P_Sim)
-            self.dim = self.dim + add_dim
+            # dim grows with dense connection; without mem_att, next layer takes only add_dim
+            if use_mem_att:
+                current_dim = current_dim + add_dim
+            else:
+                current_dim = add_dim
+        self.dim = current_dim  # store final dim for reference
 
     def forward(self, middle_node, point_node, lab_vec, point_edge, tr_label):
         """
@@ -364,41 +389,52 @@ class AGNN(nn.Module):
         node_similarities_l2 = []
         point_edge, _ = self._modules['initial_edge'](middle_node, point_edge, self.point_metric)
 
-        # Node self-attention via a transformer block
-        att = self.slf_attn(point_node,point_node)  
-
-        # Label initialization
+        # ── Label initialization ──────────────────────────────────────────────
         [b, nk] = tr_label.size()
         num_query_nodes = point_node.size(1) - nk
         num_ways = 5
-        tr_label = tr_label.reshape(-1).unsqueeze(1)   #b*1*NK
-        one_hot = torch.zeros((b*nk, num_ways),device=point_node.device)
-        one_hot.scatter_(1,tr_label,1)
-        one_hot_fin = one_hot.reshape(b,nk,num_ways)     
-        zero_pad = torch.zeros((b, num_query_nodes, num_ways),device= point_node.device).fill_(1.0/num_ways) # zero-init or avg-init
-        # zero_pad = torch.zeros((b, num_query_nodes, num_ways),device= point_node.device).fill_(0.0) # zero-init or avg-init
+        tr_label = tr_label.reshape(-1).unsqueeze(1)
+        one_hot = torch.zeros((b * nk, num_ways), device=point_node.device)
+        one_hot.scatter_(1, tr_label, 1)
+        one_hot_fin = one_hot.reshape(b, nk, num_ways)
+        zero_pad = torch.zeros((b, num_query_nodes, num_ways),
+                               device=point_node.device).fill_(1.0 / num_ways)
+        lab_new = torch.cat([one_hot_fin, zero_pad], dim=1)
 
-        #Label self-attenion
-        lab_new = torch.cat([one_hot_fin,zero_pad], dim=1)  
-        lab_t2 = torch.transpose(lab_new, 1, 2)
-        att_l = torch.bmm(lab_new, lab_t2)
+        # ── Node self-attention + fusion (ablation: self_att) ─────────────────
+        if 'no_self_att' not in self.ablation_flags:
+            # Node self-attention via a transformer block
+            att = self.slf_attn(point_node, point_node)
 
-        # Fusion layer
-        mask_c = torch.cat([att.unsqueeze(1),att_l.unsqueeze(1)],dim=1) 
-        new_mask = self.fusion(mask_c).squeeze(1)                        
-        a = 0.5
-        point_node = torch.bmm(new_mask, point_node)
-        lab_new = torch.mul(torch.bmm(new_mask,lab_new),1-a) +  torch.mul(lab_new,a)               
-        point_node = torch.cat([point_node,lab_new],dim=2)
+            # Label self-attention
+            lab_t2 = torch.transpose(lab_new, 1, 2)
+            att_l = torch.bmm(lab_new, lab_t2)
 
+            # Fusion layer: combine node-att and label-att
+            mask_c = torch.cat([att.unsqueeze(1), att_l.unsqueeze(1)], dim=1)
+            new_mask = self.fusion(mask_c).squeeze(1)
+            a = 0.5
+            point_node = torch.bmm(new_mask, point_node)
+            lab_new = torch.mul(torch.bmm(new_mask, lab_new), 1 - a) + torch.mul(lab_new, a)
+        # (w/o self_att: point_node stays as backbone output, lab_new unreweighted)
+
+        # Append label features to node features
+        point_node = torch.cat([point_node, lab_new], dim=2)
+
+        # ── GNN generations ───────────────────────────────────────────────────
         for l in range(self.generation):
+            point_edge, node_similarity_l2 = self._modules['point_sim_generation_{}'.format(l)](
+                point_node, point_edge, self.point_metric)
+            point_node_out = self._modules['distribution2point_generation_{}'.format(l)](
+                point_edge, point_node)
 
-            point_edge, node_similarity_l2 = self._modules['point_sim_generation_{}'.format(l)](point_node, point_edge, self.point_metric)
-            point_node_out = self._modules['distribution2point_generation_{}'.format(l)](point_edge, point_node)
-
-            # Layer memory attention (dense connection)
-            point_node = torch.cat([point_node, point_node_out], dim=2)
+            # Layer memory attention: dense connection (ablation: mem_att)
+            if 'no_mem_att' not in self.ablation_flags:
+                point_node = torch.cat([point_node, point_node_out], dim=2)
+            else:
+                point_node = point_node_out  # replace instead of accumulate
 
             point_similarities.append(point_edge * self.loss_indicator[0])
             node_similarities_l2.append(node_similarity_l2 * self.loss_indicator[1])
-        return point_similarities, node_similarities_l2 
+
+        return point_similarities, node_similarities_l2
