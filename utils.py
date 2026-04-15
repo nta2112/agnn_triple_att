@@ -65,10 +65,19 @@ def adjust_learning_rate(optimizers, lr, iteration, dec_lr_step, lr_adj_base):
     :param optimizers: the optimizers
     :param lr: learning rate
     :param iteration: current iteration
-    :param dec_lr_step: decrease learning rate in how many step
+    :param dec_lr_step: decrease learning rate in how many steps.
+                        Can be an int (periodic decay) or a list of milestone steps
+                        (e.g. [1500, 2500]) for custom multi-step decay.
+    :param lr_adj_base: multiplicative factor applied per decay step
     :return: None
     """
-    new_lr = lr * (lr_adj_base ** (int(iteration / dec_lr_step)))
+    if isinstance(dec_lr_step, list):
+        # Multi-step milestone decay: count how many milestones have been passed
+        num_decays = sum(1 for m in dec_lr_step if iteration >= m)
+        new_lr = lr * (lr_adj_base ** num_decays)
+    else:
+        # Periodic decay: decay every dec_lr_step iterations
+        new_lr = lr * (lr_adj_base ** (int(iteration / dec_lr_step)))
     for optimizer in optimizers:
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lr
