@@ -10,33 +10,50 @@ class PrototypicalLaStViT(nn.Module):
         
     def forward(self, support_x, query_x, n_way, k_shot):
         """
-        Forward pass for a Few-Shot Episode
-        :param support_x: [n_way * k_shot, 3, 224, 224] tensor
-        :param query_x: [num_queries, 3, 224, 224] tensor
+        Forward pass for a Batch of Few-Shot Episodes (to support Multi-GPU DataParallel)
+        :param support_x: [p, n_way * k_shot, 3, 224, 224] tensor (p is tasks per GPU)
+        :param query_x: [p, n_query_total, 3, 224, 224] tensor
         :param n_way: number of classes
         :param k_shot: number of support samples per class
-        :return: logits [num_queries, n_way]
+        :return: logits [p, n_query_total, n_way]
         """
-        # Encode support and query images
-        # LaSt-ViT dense_vit returns (cls_token, x_detach)
-        support_cls, _ = self.encoder(support_x) 
-        query_cls, _ = self.encoder(query_x)
+        # Case 1: Simple 4D input (backward compatibility or single task)
+        # We manually add a batch dimension of 1
+        is_5d = len(support_x.shape) == 5
+        if not is_5d:
+            support_x = support_x.unsqueeze(0)
+            query_x = query_x.unsqueeze(0)
+            
+        p, n_s, c, h, w = support_x.shape
+        _, n_q, _, _, _ = query_x.shape
         
-        # Calculate Prototypes
-        # Reshape to [n_way, k_shot, embed_dim]
-        # Then mean over the k_shot dimension
+        # Flatten all images into a single Batch [p * N, 3, H, W] for the Encoder
+        support_x_flat = support_x.view(-1, c, h, w)
+        query_x_flat = query_x.view(-1, c, h, w)
+        
+        # Encode
+        support_cls, _ = self.encoder(support_x_flat) # [p * n_s, embed_dim]
+        query_cls, _ = self.encoder(query_x_flat)     # [p * n_q, embed_dim]
+        
         embed_dim = support_cls.size(-1)
-        support_cls_reshaped = support_cls.view(n_way, k_shot, embed_dim)
-        prototypes = support_cls_reshaped.mean(dim=1) # [n_way, embed_dim]
         
-        # Calculate Euclidean distance between Query and Prototypes
-        # cdist computes pair-wise distance between query_cls and prototypes
-        # query_cls: [num_queries, embed_dim]
-        # prototypes: [n_way, embed_dim]
-        # dists: [num_queries, n_way]
-        dists = torch.cdist(query_cls, prototypes, p=2.0)
+        # Reshape back to [p, n_s, embed_dim]
+        support_cls = support_cls.view(p, n_s, embed_dim)
+        query_cls = query_cls.view(p, n_q, embed_dim)
         
-        # We use negative distances as logits (the smaller the distance, the higher the raw score)
+        # Calculate Prototypes per task
+        # Reshape support to [p, n_way, k_shot, embed_dim]
+        support_cls_reshaped = support_cls.view(p, n_way, k_shot, embed_dim)
+        prototypes = support_cls_reshaped.mean(dim=2) # [p, n_way, embed_dim]
+        
+        # Calculate Euclidean distance [p, n_q, n_way]
+        # torch.cdist handles batches if input is 3D!
+        dists = torch.cdist(query_cls, prototypes, p=2.0) # [p, n_q, n_way]
+        
         logits = -dists
+        
+        # If input was 4D, return 2D logits [num_queries, n_way]
+        if not is_5d:
+            return logits.squeeze(0)
         
         return logits

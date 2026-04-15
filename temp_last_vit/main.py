@@ -29,7 +29,15 @@ class ProtoViTTrainer(object):
         self.train_opt = cfg['train_config']
         self.eval_opt = cfg['eval_config']
 
-        self.model = model.to(arg.device)
+        # Auto GPU Detection & DataParallel
+        num_gpu = torch.cuda.device_count()
+        if num_gpu > 1:
+            log.info(f'Detected {num_gpu} GPUs. Using DataParallel.')
+            self.model = nn.DataParallel(model).to(arg.device)
+        else:
+            log.info(f'Using single GPU: {arg.device}')
+            self.model = model.to(arg.device)
+
         self.log = log
         self.data_loader = data_loader
 
@@ -58,50 +66,42 @@ class ProtoViTTrainer(object):
             self.global_step += 1
             self.model.train()
 
-            # The AGNN DataLoader with torchnet.parallel(batch_size=1) returns:
             # batch[0]: support_data [1, num_tasks, n_support, 3, H, W]
-            # batch[1]: support_label [1, num_tasks, n_support]
             # batch[2]: query_data [1, num_tasks, n_query, 3, H, W]
-            # batch[3]: query_label [1, num_tasks, n_query]
             
-            # Squeeze the first dimension (torchnet batch size 1)
-            data_support_all = batch[0].squeeze(0).to(self.arg.device)
-            data_query_all = batch[2].squeeze(0).to(self.arg.device)
+            # Squeeze and prepare 5D batch
+            data_support_all = batch[0].squeeze(0).to(self.arg.device) # [p, n_s, 3, H, W]
+            data_query_all = batch[2].squeeze(0).to(self.arg.device)   # [p, n_q, 3, H, W]
             
-            p = self.train_opt['batch_size'] # num_tasks
+            # Resize whole batch if needed
+            if data_support_all.shape[-1] != 224:
+                p, ns, c, h, w = data_support_all.shape
+                _, nq, _, _, _ = data_query_all.shape
+                data_support_all = F.interpolate(data_support_all.view(-1, c, h, w), size=resize_dim, mode='bilinear', align_corners=False).view(p, ns, c, 224, 224)
+                data_query_all = F.interpolate(data_query_all.view(-1, c, h, w), size=resize_dim, mode='bilinear', align_corners=False).view(p, nq, c, 224, 224)
             
-            task_losses = []
-            task_accs = []
+            # Recreate query_y per task [p, n_q_total]
+            p = data_support_all.shape[0]
+            # query_y_task: [n_q_total]
+            query_y_task = torch.arange(n_way).repeat_interleave(n_query).to(self.arg.device)
+            # query_y: [p, n_q_total]
+            query_y = query_y_task.expand(p, -1)
             
-            for task_idx in range(p):
-                support_x = data_support_all[task_idx] # [n_way * k_shot, 3, H, W]
-                query_x = data_query_all[task_idx]     # [n_way * n_query, 3, H, W]
-                
-                # Resize only if necessary, ensuring 4D input [N, C, H, W]
-                if support_x.shape[-2:] != resize_dim:
-                    support_x = F.interpolate(support_x, size=resize_dim, mode='bilinear', align_corners=False)
-                    query_x = F.interpolate(query_x, size=resize_dim, mode='bilinear', align_corners=False)
-                
-                # Recreate query_y (0 to n_way-1)
-                query_y = torch.arange(n_way).repeat_interleave(n_query).to(self.arg.device)
-                
-                # Forward Pass
-                logits = self.model(support_x, query_x, n_way, k_shot) # [num_queries, n_way]
-                
-                # Loss
-                loss = self.loss_fn(logits, query_y)
-                task_losses.append(loss)
-                
-                # Accuracy
-                preds = torch.argmax(logits, dim=1)
-                acc = (preds == query_y).float().mean()
-                task_accs.append(acc)
+            # Forward Pass (Vectorized over Batch of Tasks)
+            logits = self.model(data_support_all, data_query_all, n_way, k_shot) # [p, n_q_total, n_way]
             
-            # Backprop task average
-            total_loss = torch.mean(torch.stack(task_losses))
-            total_loss.backward()
+            # Loss calculation for the batch
+            logits_flat = logits.view(-1, n_way)
+            query_y_flat = query_y.reshape(-1)
+            
+            loss = self.loss_fn(logits_flat, query_y_flat)
+            loss.backward()
             self.optimizer.step()
             
+            # Accuracy
+            preds = torch.argmax(logits, dim=2)
+            acc = (preds == query_y).float().mean()
+
             # Adjust learning rate
             adjust_learning_rate(optimizers=[self.optimizer],
                                  lr=self.train_opt['lr'],
@@ -110,8 +110,7 @@ class ProtoViTTrainer(object):
                                  lr_adj_base=self.train_opt['lr_adj_base'])
 
             if self.global_step % self.arg.log_step == 0:
-                mean_acc = torch.mean(torch.stack(task_accs)).item()
-                self.log.info(f'step: {self.global_step} | loss: {total_loss.item():.4f} | train_acc: {mean_acc:.4f}')
+                self.log.info(f'step: {self.global_step} | loss: {loss.item():.4f} | train_acc: {acc.item():.4f}')
 
             # Eval
             if self.global_step > 0 and self.global_step % self.eval_opt['interval'] == 0:
@@ -129,7 +128,7 @@ class ProtoViTTrainer(object):
 
                 save_checkpoint({
                     'iteration': self.global_step,
-                    'proto_vit_state_dict': self.model.state_dict(),
+                    'proto_vit_state_dict': self.model.module.state_dict() if isinstance(self.model, nn.DataParallel) else self.model.state_dict(),
                     'test_acc': self.test_acc,
                     'optimizer': self.optimizer.state_dict(),
                 }, is_best, self.arg.checkpoint_dir)
@@ -145,26 +144,24 @@ class ProtoViTTrainer(object):
         
         with torch.no_grad():
             for current_iteration, batch in enumerate(self.data_loader[partition]()):
-                # Squeeze the first dimension (torchnet batch size 1)
+                # Squeeze and prepare
                 data_support_all = batch[0].squeeze(0).to(self.arg.device)
                 data_query_all = batch[2].squeeze(0).to(self.arg.device)
                 
-                p = self.eval_opt['batch_size'] # num_tasks
+                if data_support_all.shape[-1] != 224:
+                    p, ns, c, h, w = data_support_all.shape
+                    _, nq, _, _, _ = data_query_all.shape
+                    data_support_all = F.interpolate(data_support_all.view(-1, c, h, w), size=resize_dim, mode='bilinear').view(p, ns, c, 224, 224)
+                    data_query_all = F.interpolate(data_query_all.view(-1, c, h, w), size=resize_dim, mode='bilinear').view(p, nq, c, 224, 224)
                 
-                for task_idx in range(p):
-                    support_x = data_support_all[task_idx]
-                    query_x = data_query_all[task_idx]
-                    
-                    if support_x.shape[-2:] != resize_dim:
-                        support_x = F.interpolate(support_x, size=resize_dim, mode='bilinear')
-                        query_x = F.interpolate(query_x, size=resize_dim, mode='bilinear')
-                    
-                    query_y = torch.arange(n_way).repeat_interleave(n_query).to(self.arg.device)
-                    
-                    logits = self.model(support_x, query_x, n_way, k_shot)
-                    preds = torch.argmax(logits, dim=1)
-                    acc = (preds == query_y).float().mean()
-                    all_accs.append(acc.item())
+                p = data_support_all.shape[0]
+                query_y_task = torch.arange(n_way).repeat_interleave(n_query).to(self.arg.device)
+                query_y = query_y_task.expand(p, -1)
+                
+                logits = self.model(data_support_all, data_query_all, n_way, k_shot)
+                preds = torch.argmax(logits, dim=2)
+                acc = (preds == query_y).float().mean()
+                all_accs.append(acc.item())
                     
         mean_acc = np.mean(all_accs)
         std_acc = np.std(all_accs)
@@ -194,6 +191,7 @@ def main():
         
     set_logging_config(os.path.join(args_opt.log_dir, config['exp_name']))
     logger = logging.getLogger('main')
+    logger.info(f"Experiment: {config['exp_name']}")
 
     # Seed
     np.random.seed(args_opt.seed)
@@ -250,8 +248,8 @@ def main():
 
     if args_opt.mode == 'train':
         trainer.train()
-    elif args_opt.mode == 'eval':
-        trainer.eval()
+    elif args_opt.mode == 'test' or args_opt.mode == 'eval':
+        trainer.eval(partition='val')
 
 if __name__ == '__main__':
     main()
