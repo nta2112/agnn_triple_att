@@ -1,4 +1,4 @@
-from backbone import ResNet12, ConvNet, ResNet50Pretrained
+from backbone import ResNet12, ConvNet, ResNet50Pretrained, LaStViTBackbone
 from agnn import AGNN
 from utils import set_logging_config, adjust_learning_rate, save_checkpoint, allocate_tensors, preprocessing, \
     initialize_nodes_edges, backbone_two_stage_initialization, one_hot_encode
@@ -577,6 +577,9 @@ def main():
     elif config['backbone'] == 'resnet50':
         enc_module = ResNet50Pretrained(emb_size=config['emb_size'])
         print('Backbone: ResNet50 Pretrained ImageNet')
+    elif config['backbone'] == 'last_vit':
+        enc_module = LaStViTBackbone(emb_size=config['emb_size'], pretrained=True)
+        print('Backbone: LaSt-ViT (DenseViT)')
     elif config['backbone'] == 'convnet':
         enc_module = ConvNet(emb_size=config['emb_size'], cifar_flag=cifar_flag)
         print('Backbone: ConvNet')

@@ -241,3 +241,85 @@ class ResNet50Pretrained(nn.Module):
         out.append(x_embed)
         out.append(inter_embed)
         return out
+
+
+import torch.nn.functional as F
+from temp_last_vit.last_vit_model import build_last_vit_b16
+
+class LaStViTBackbone(nn.Module):
+    """
+    LaSt-ViT Backbone for AGNN (ViT-B/16 based)
+    """
+    def __init__(self, emb_size, pretrained=True):
+        super(LaStViTBackbone, self).__init__()
+        self.emb_size = emb_size
+        
+        # Load DenseViT (The backbone itself) 
+        # We need to access individual blocks for intermediate features
+        self.vit = build_last_vit_b16(pretrained=pretrained)
+        
+        self.image_size = 224 # ViT requires 224x224
+        self.hidden_dim = 768 # ViT-B hidden dimension
+        
+        # Projection heads for AGNN (Stage Last and Stage Second-Last)
+        self.layer_last = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.emb_size),
+            nn.LayerNorm(self.emb_size)
+        )
+        self.layer_second = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.emb_size),
+            nn.LayerNorm(self.emb_size)
+        )
+
+    def forward(self, x):
+        # Resize if input is not 224x224
+        if x.shape[-1] != self.image_size:
+            x = F.interpolate(x, size=(self.image_size, self.image_size), mode='bilinear', align_corners=False)
+        
+        # Manually perform forward to get intermediate outputs
+        # We process patch embedding and class token first
+        x = self.vit._process_input(x)
+        n = x.shape[0]
+        batch_class_token = self.vit.class_token.expand(n, -1, -1)
+        x = torch.cat([batch_class_token, x], dim=1)
+        
+        # Encoder processing: 12 Blocks
+        # We'll take the output of 11th block as 'inter' and 12th as 'last'
+        # VisionTransformer.encoder is a Sequential(Dropout, layers: Sequential)
+        # torchvision version: vit.encoder has .layers
+        for i, block in enumerate(self.vit.encoder.layers):
+            x = block(x)
+            if i == 10: # 11th block (index 10)
+                stage_second = x
+        
+        stage_last = x # 12th block output 
+        
+        # For ViT, we typically use the [CLS] token (0-th token) as the representative feature
+        # but LaSt-ViT provides a more robust 'cls_token' calculation logic from DenseViT 
+        # We will use that logic on the final hidden states
+        
+        # Stage Last: Use LaSt-ViT robust cls_token calculation on the final states
+        def get_robust_cls(h_states):
+            if self.vit.cached_kernel is None:
+                self.vit.cached_kernel = self.vit.gaussian_kernel_1d(768, 768 ** 0.5).to(h_states.device).unsqueeze(0).unsqueeze(0)
+            
+            x_detach = h_states[:, 1:]
+            x_fft = torch.fft.fft(h_states[:, 1:], dim=-1)
+            x_fft = torch.fft.fftshift(x_fft, dim=-1)
+            x_fft = x_fft * self.vit.cached_kernel.to(h_states.device)
+            x_fft = torch.fft.ifftshift(x_fft, dim=-1)
+            x_recovered = torch.fft.ifft(x_fft, dim=-1).real
+            
+            diff = x_detach / (torch.abs(x_recovered - x_detach) + 1e-8)
+            _, indices = torch.topk(diff, k=1, dim=1, largest=True)
+            sel_p = torch.gather(x_detach, 1, indices)
+            return torch.mean(sel_p, dim=1)
+
+        last_cls = get_robust_cls(stage_last)
+        second_cls = get_robust_cls(stage_second)
+        
+        # Project to AGNN emb_size
+        x_embed = self.layer_last(last_cls)
+        inter_embed = self.layer_second(second_cls)
+        
+        return [x_embed, inter_embed]
