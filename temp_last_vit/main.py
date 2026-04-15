@@ -58,35 +58,31 @@ class ProtoViTTrainer(object):
             self.global_step += 1
             self.model.train()
 
-            # batch structure from dataloader: [batch_size, shots+queries, channels, H, W]
-            # however AGNN batch output might be a list. Let's unpack similar to AGNN initialize_nodes_edges
-            data, data_labels = batch[0].to(self.arg.device), batch[1].to(self.arg.device)
-            p = self.train_opt['batch_size']
+            # The AGNN DataLoader with torchnet.parallel(batch_size=1) returns:
+            # batch[0]: support_data [1, num_tasks, n_support, 3, H, W]
+            # batch[1]: support_label [1, num_tasks, n_support]
+            # batch[2]: query_data [1, num_tasks, n_query, 3, H, W]
+            # batch[3]: query_label [1, num_tasks, n_query]
             
-            # data shape: [p, n_way * (k_shot + n_query), 3, H, W]
-            # split support and query
-            # We assume label sorting is identical to AGNN dataloader
-            # 0 to n_way * k_shot -> support
-            # rest -> query
+            # Squeeze the first dimension (torchnet batch size 1)
+            data_support_all = batch[0].squeeze(0).to(self.arg.device)
+            data_query_all = batch[2].squeeze(0).to(self.arg.device)
             
-            data_support = data[:, :n_way * k_shot]
-            data_query = data[:, n_way * k_shot:]
+            p = self.train_opt['batch_size'] # num_tasks
             
-            # Flatten batch dimension into tasks
-            # Process task by task since ViT memory demands are huge
             task_losses = []
             task_accs = []
             
             for task_idx in range(p):
-                support_x = data_support[task_idx] # [n_way * k_shot, 3, H, W]
-                query_x = data_query[task_idx]     # [n_way * n_query, 3, H, W]
+                support_x = data_support_all[task_idx] # [n_way * k_shot, 3, H, W]
+                query_x = data_query_all[task_idx]     # [n_way * n_query, 3, H, W]
                 
-                # Resize
-                support_x = F.interpolate(support_x, size=resize_dim, mode='bilinear', align_corners=False)
-                query_x = F.interpolate(query_x, size=resize_dim, mode='bilinear', align_corners=False)
+                # Resize only if necessary, ensuring 4D input [N, C, H, W]
+                if support_x.shape[-2:] != resize_dim:
+                    support_x = F.interpolate(support_x, size=resize_dim, mode='bilinear', align_corners=False)
+                    query_x = F.interpolate(query_x, size=resize_dim, mode='bilinear', align_corners=False)
                 
-                # query_labels for this task (0 to n_way-1)
-                # Since dataloader provides data sorted by class, we recreate labels for query
+                # Recreate query_y (0 to n_way-1)
                 query_y = torch.arange(n_way).repeat_interleave(n_query).to(self.arg.device)
                 
                 # Forward Pass
@@ -149,18 +145,19 @@ class ProtoViTTrainer(object):
         
         with torch.no_grad():
             for current_iteration, batch in enumerate(self.data_loader[partition]()):
-                data = batch[0].to(self.arg.device)
-                p = self.eval_opt['batch_size']
+                # Squeeze the first dimension (torchnet batch size 1)
+                data_support_all = batch[0].squeeze(0).to(self.arg.device)
+                data_query_all = batch[2].squeeze(0).to(self.arg.device)
                 
-                data_support = data[:, :n_way * k_shot]
-                data_query = data[:, n_way * k_shot:]
+                p = self.eval_opt['batch_size'] # num_tasks
                 
                 for task_idx in range(p):
-                    support_x = data_support[task_idx]
-                    query_x = data_query[task_idx]
+                    support_x = data_support_all[task_idx]
+                    query_x = data_query_all[task_idx]
                     
-                    support_x = F.interpolate(support_x, size=resize_dim, mode='bilinear')
-                    query_x = F.interpolate(query_x, size=resize_dim, mode='bilinear')
+                    if support_x.shape[-2:] != resize_dim:
+                        support_x = F.interpolate(support_x, size=resize_dim, mode='bilinear')
+                        query_x = F.interpolate(query_x, size=resize_dim, mode='bilinear')
                     
                     query_y = torch.arange(n_way).repeat_interleave(n_query).to(self.arg.device)
                     
