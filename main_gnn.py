@@ -2,8 +2,11 @@ from backbone import ResNet12, ConvNet, ResNet50Pretrained, LaStViTBackbone
 from agnn import AGNN
 from utils import set_logging_config, adjust_learning_rate, save_checkpoint, allocate_tensors, preprocessing, \
     initialize_nodes_edges, backbone_two_stage_initialization, one_hot_encode
-from dataloader import MiniImagenet, TieredImagenet, CUB200, DataLoader, Flowers, CustomImageFolder
-import torch
+from dataloader import DataLoader, CustomImageFolder
+try:
+    from dataloader import MiniImagenet, TieredImagenet, CUB200, Flowers
+except ImportError:
+    pass
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
