@@ -253,19 +253,17 @@ class CustomImageFolder(data.Dataset):
         
         if self.partition == 'train':
             self.transform = transforms.Compose([
-                transforms.Resize(box_size, interpolation=pil_image.BICUBIC),
+                transforms.Resize(box_size), # Use default BILINEAR interpolation which is much faster
                 transforms.RandomCrop(image_size, padding=4),
                 transforms.RandomHorizontalFlip(),
                 transforms.ColorJitter(brightness=.1, contrast=.1, saturation=.1, hue=.1),
-                lambda x: np.asarray(x),
                 transforms.ToTensor(),
                 normalize
             ])
         else:  # val or test
             self.transform = transforms.Compose([
-                transforms.Resize(box_size, interpolation=pil_image.BICUBIC),
+                transforms.Resize(box_size),
                 transforms.CenterCrop(image_size),
-                lambda x: np.asarray(x),
                 transforms.ToTensor(),
                 normalize
             ])
