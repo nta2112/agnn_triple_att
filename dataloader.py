@@ -11,228 +11,228 @@ import torchnet as tnt
 
 # please change the root path to the path of each dataset
 
-class MiniImagenet(data.Dataset):
-    """
-    preprocess the MiniImageNet dataset
-    """
-    def __init__(self, root, partition='train', category='mini'):
-        super(MiniImagenet, self).__init__()
-        self.root = root
-        self.partition = partition
-        self.data_size = [3, 84, 84]
-        # set normalizer
-        mean_pix = [x / 255.0 for x in [120.39586422, 115.59361427, 104.54012653]]
-        std_pix = [x / 255.0 for x in [70.68188272, 68.27635443, 72.54505529]]
-        normalize = transforms.Normalize(mean=mean_pix, std=std_pix)
-        # set transformer
-        if self.partition == 'train':
-            self.transform = transforms.Compose([transforms.RandomCrop(84, padding=4),
-                                                 transforms.RandomHorizontalFlip(),
-                                                 transforms.ColorJitter(brightness=.1,
-                                                                        contrast=.1,
-                                                                        saturation=.1,
-                                                                        hue=.1),
-                                                 lambda x: np.asarray(x),
-                                                 transforms.ToTensor(),
-                                                 normalize])
-        else:  # 'val' or 'test' ,
-            self.transform = transforms.Compose([lambda x: np.asarray(x),
-                                                 transforms.ToTensor(),
-                                                 normalize])
-        print('Loading {} ImageNet dataset -phase {}'.format(category, partition))
-        # load data
-        dataset_path = os.path.join('/home/chenghao/few-shot-gnn-master/datasets/compacted_datasets/', 'mini_imagenet_%s.pickle' % self.partition)
-        # dataset_path = os.path.join(self.root, 'mini_imagenet', 'mini_imagenet_%s.pickle' % self.partition)
-        with open(dataset_path, 'rb') as handle:
-            data = pickle.load(handle)
+# class MiniImagenet(data.Dataset):
+#     """
+#     preprocess the MiniImageNet dataset
+#     """
+#     def __init__(self, root, partition='train', category='mini'):
+#         super(MiniImagenet, self).__init__()
+#         self.root = root
+#         self.partition = partition
+#         self.data_size = [3, 84, 84]
+#         # set normalizer
+#         mean_pix = [x / 255.0 for x in [120.39586422, 115.59361427, 104.54012653]]
+#         std_pix = [x / 255.0 for x in [70.68188272, 68.27635443, 72.54505529]]
+#         normalize = transforms.Normalize(mean=mean_pix, std=std_pix)
+#         # set transformer
+#         if self.partition == 'train':
+#             self.transform = transforms.Compose([transforms.RandomCrop(84, padding=4),
+#                                                  transforms.RandomHorizontalFlip(),
+#                                                  transforms.ColorJitter(brightness=.1,
+#                                                                         contrast=.1,
+#                                                                         saturation=.1,
+#                                                                         hue=.1),
+#                                                  lambda x: np.asarray(x),
+#                                                  transforms.ToTensor(),
+#                                                  normalize])
+#         else:  # 'val' or 'test' ,
+#             self.transform = transforms.Compose([lambda x: np.asarray(x),
+#                                                  transforms.ToTensor(),
+#                                                  normalize])
+#         print('Loading {} ImageNet dataset -phase {}'.format(category, partition))
+#         # load data
+#         dataset_path = os.path.join('/home/chenghao/few-shot-gnn-master/datasets/compacted_datasets/', 'mini_imagenet_%s.pickle' % self.partition)
+#         # dataset_path = os.path.join(self.root, 'mini_imagenet', 'mini_imagenet_%s.pickle' % self.partition)
+#         with open(dataset_path, 'rb') as handle:
+#             data = pickle.load(handle)
 
-        self.full_class_list = list(data.keys())
-        self.data, self.labels = data2datalabel(data)
-        self.label2ind = buildLabelIndex(self.labels)
+#         self.full_class_list = list(data.keys())
+#         self.data, self.labels = data2datalabel(data)
+#         self.label2ind = buildLabelIndex(self.labels)
 
-    def __getitem__(self, index):
-        img, label = self.data[index], self.labels[index]
-        image_data=pil_image.fromarray(np.uint8(img))
-        image_data=image_data.resize((self.data_size[2], self.data_size[1]))
-        return image_data, label
+#     def __getitem__(self, index):
+#         img, label = self.data[index], self.labels[index]
+#         image_data=pil_image.fromarray(np.uint8(img))
+#         image_data=image_data.resize((self.data_size[2], self.data_size[1]))
+#         return image_data, label
 
-    def __len__(self):
-        return len(self.data)
+#     def __len__(self):
+#         return len(self.data)
 
 
-class TieredImagenet(data.Dataset):
-    def __init__(self, root, partition='train', category='tiered'):
-        super(TieredImagenet, self).__init__()
+# class TieredImagenet(data.Dataset):
+#     def __init__(self, root, partition='train', category='tiered'):
+#         super(TieredImagenet, self).__init__()
 
-        # self.root = root
-        self.root = '/home/chenghao/few-shot-meta-baseline/materials'
-        self.partition = partition
-        self.data_size = [3, 84, 84]
+#         # self.root = root
+#         self.root = '/home/chenghao/few-shot-meta-baseline/materials'
+#         self.partition = partition
+#         self.data_size = [3, 84, 84]
 
-        # set normalizer
-        mean_pix = [x/255.0 for x in [120.39586422, 115.59361427, 104.54012653]]
-        std_pix = [x/255.0 for x in [70.68188272, 68.27635443,  72.54505529]]
+#         # set normalizer
+#         mean_pix = [x/255.0 for x in [120.39586422, 115.59361427, 104.54012653]]
+#         std_pix = [x/255.0 for x in [70.68188272, 68.27635443,  72.54505529]]
 
-        normalize = transforms.Normalize(mean=mean_pix, std=std_pix)
+#         normalize = transforms.Normalize(mean=mean_pix, std=std_pix)
 
-        # set transformer
-        if self.partition == 'train':
-            self.transform = transforms.Compose([transforms.RandomCrop(84, padding=4),
-                                                 transforms.RandomHorizontalFlip(),
-                                                 transforms.ColorJitter(brightness=.1, contrast=.1, saturation=.1, hue=.1),
-                                                 lambda x: np.asarray(x),
-                                                 transforms.ToTensor(),
-                                                 normalize])
-        else:  # 'val' or 'test' ,
-            self.transform = transforms.Compose([lambda x: np.asarray(x),
-                                                 transforms.ToTensor(),
-                                                 normalize])
-        print('Loading {} ImageNet dataset -phase {}'.format(category, partition))
-        if category == 'tiered':
-            dataset_path = os.path.join(self.root, 'tiered-imagenet', '%s_images.npz' % self.partition)
-            label_path = os.path.join(self.root, 'tiered-imagenet', '%s_labels.pkl' % self.partition)
-            with open(dataset_path, 'rb') as handle:
-                self.data = np.load(handle)['images']
-            with open(label_path, 'rb') as handle:
-                label_ = pickle.load(handle)
-                self.labels = label_['labels']
-                self.label2ind = buildLabelIndex(self.labels)
-            self.full_class_list = sorted(self.label2ind.keys())
-        else:
-            print('No such category dataset')
+#         # set transformer
+#         if self.partition == 'train':
+#             self.transform = transforms.Compose([transforms.RandomCrop(84, padding=4),
+#                                                  transforms.RandomHorizontalFlip(),
+#                                                  transforms.ColorJitter(brightness=.1, contrast=.1, saturation=.1, hue=.1),
+#                                                  lambda x: np.asarray(x),
+#                                                  transforms.ToTensor(),
+#                                                  normalize])
+#         else:  # 'val' or 'test' ,
+#             self.transform = transforms.Compose([lambda x: np.asarray(x),
+#                                                  transforms.ToTensor(),
+#                                                  normalize])
+#         print('Loading {} ImageNet dataset -phase {}'.format(category, partition))
+#         if category == 'tiered':
+#             dataset_path = os.path.join(self.root, 'tiered-imagenet', '%s_images.npz' % self.partition)
+#             label_path = os.path.join(self.root, 'tiered-imagenet', '%s_labels.pkl' % self.partition)
+#             with open(dataset_path, 'rb') as handle:
+#                 self.data = np.load(handle)['images']
+#             with open(label_path, 'rb') as handle:
+#                 label_ = pickle.load(handle)
+#                 self.labels = label_['labels']
+#                 self.label2ind = buildLabelIndex(self.labels)
+#             self.full_class_list = sorted(self.label2ind.keys())
+#         else:
+#             print('No such category dataset')
 
-    def __getitem__(self, index):
-        img, label = self.data[index], self.labels[index]
-        image_data = pil_image.fromarray(img)
-        return image_data, label
+#     def __getitem__(self, index):
+#         img, label = self.data[index], self.labels[index]
+#         image_data = pil_image.fromarray(img)
+#         return image_data, label
 
-    def __len__(self):
-        return len(self.data)
+#     def __len__(self):
+#         return len(self.data)
 
-class CUB200(data.Dataset):
-    def __init__(self, root, partition='train', category='cub'):
-        super(CUB200, self).__init__()
-        self.root = root
-        self.partition = partition
-        self.data_size = [3, 84, 84]
-        # set normalizer
-        mean_pix = [0.485, 0.456, 0.406]
-        std_pix = [0.229, 0.224, 0.225]
-        normalize = transforms.Normalize(mean=mean_pix, std=std_pix)
-        # set transformer
-        if self.partition == 'train':
-            self.transform = transforms.Compose([transforms.Resize(84, interpolation = pil_image.BICUBIC),
-                                                 transforms.RandomCrop(84, padding=4),
-                                                 transforms.RandomHorizontalFlip(),
-                                                 transforms.ColorJitter(brightness=.1, contrast=.1, saturation=.1, hue=.1),
-                                                 lambda x: np.asarray(x),
-                                                 transforms.ToTensor(),
-                                                 normalize])
-        else:  # 'val' or 'test' ,
-            self.transform = transforms.Compose([transforms.Resize(84, interpolation = pil_image.BICUBIC),
-                                                 transforms.CenterCrop(84),
-                                                 lambda x: np.asarray(x),
-                                                 transforms.ToTensor(),
-                                                 normalize])
-        print('Loading {} dataset -phase {}'.format(category, partition))
-        if category == 'cub':
-            IMAGE_PATH = '/home/chenghao/FEAT/data/cub'
-            # os.path.join(self.root, 'cub-200-2011', 'images')
-            # txt_path = os.path.join(self.root, 'cub-200-2011/split', '%s.csv' % self.partition)
-            txt_path = os.path.join('/home/chenghao/FEAT/data/cub/split', '%s.csv' % self.partition)
-            lines = [x.strip() for x in open(txt_path, 'r').readlines()][1:]
-            data = []
-            label = []
-            lb = -1
-            self.wnids = []
-            for l in lines:
-                context = l.split(',')
-                name = context[0]
-                wnid = context[1]
-                # path = os.path.join(IMAGE_PATH, wnid, name)
-                path = os.path.join(IMAGE_PATH, name)
-                if wnid not in self.wnids:
-                    self.wnids.append(wnid)
-                    lb += 1
-                data.append(path)
-                label.append(lb)
-            self.data = data
-            self.labels = label
-            self.full_class_list = list(np.unique(np.array(label)))
-            self.label2ind = buildLabelIndex(self.labels)
-        else:
-            print('No such category dataset')
+# class CUB200(data.Dataset):
+#     def __init__(self, root, partition='train', category='cub'):
+#         super(CUB200, self).__init__()
+#         self.root = root
+#         self.partition = partition
+#         self.data_size = [3, 84, 84]
+#         # set normalizer
+#         mean_pix = [0.485, 0.456, 0.406]
+#         std_pix = [0.229, 0.224, 0.225]
+#         normalize = transforms.Normalize(mean=mean_pix, std=std_pix)
+#         # set transformer
+#         if self.partition == 'train':
+#             self.transform = transforms.Compose([transforms.Resize(84, interpolation = pil_image.BICUBIC),
+#                                                  transforms.RandomCrop(84, padding=4),
+#                                                  transforms.RandomHorizontalFlip(),
+#                                                  transforms.ColorJitter(brightness=.1, contrast=.1, saturation=.1, hue=.1),
+#                                                  lambda x: np.asarray(x),
+#                                                  transforms.ToTensor(),
+#                                                  normalize])
+#         else:  # 'val' or 'test' ,
+#             self.transform = transforms.Compose([transforms.Resize(84, interpolation = pil_image.BICUBIC),
+#                                                  transforms.CenterCrop(84),
+#                                                  lambda x: np.asarray(x),
+#                                                  transforms.ToTensor(),
+#                                                  normalize])
+#         print('Loading {} dataset -phase {}'.format(category, partition))
+#         if category == 'cub':
+#             IMAGE_PATH = '/home/chenghao/FEAT/data/cub'
+#             # os.path.join(self.root, 'cub-200-2011', 'images')
+#             # txt_path = os.path.join(self.root, 'cub-200-2011/split', '%s.csv' % self.partition)
+#             txt_path = os.path.join('/home/chenghao/FEAT/data/cub/split', '%s.csv' % self.partition)
+#             lines = [x.strip() for x in open(txt_path, 'r').readlines()][1:]
+#             data = []
+#             label = []
+#             lb = -1
+#             self.wnids = []
+#             for l in lines:
+#                 context = l.split(',')
+#                 name = context[0]
+#                 wnid = context[1]
+#                 # path = os.path.join(IMAGE_PATH, wnid, name)
+#                 path = os.path.join(IMAGE_PATH, name)
+#                 if wnid not in self.wnids:
+#                     self.wnids.append(wnid)
+#                     lb += 1
+#                 data.append(path)
+#                 label.append(lb)
+#             self.data = data
+#             self.labels = label
+#             self.full_class_list = list(np.unique(np.array(label)))
+#             self.label2ind = buildLabelIndex(self.labels)
+#         else:
+#             print('No such category dataset')
 
-    def __getitem__(self, index):
-        path, label = self.data[index], self.labels[index]
-        image_data = pil_image.open(path).convert('RGB')
-        return image_data, label
+#     def __getitem__(self, index):
+#         path, label = self.data[index], self.labels[index]
+#         image_data = pil_image.open(path).convert('RGB')
+#         return image_data, label
 
-    def __len__(self):
-        return len(self.data)
+#     def __len__(self):
+#         return len(self.data)
 
-class Flowers(data.Dataset):
-    def __init__(self, root, partition='train', category='flowers'):
-        super(Flowers, self).__init__()
-        self.root = '/home/chenghao/few-shot-meta-baseline/materials'
-        self.partition = partition
-        self.data_size = [3, 84, 84]
-        # set normalizer
-        mean_pix = [x/255.0  for x in [125.3, 123.0, 113.9]]
-        std_pix = [x/255.0  for x in [63.0, 62.1, 66.7]]
-        normalize = transforms.Normalize(mean=mean_pix, std=std_pix)
-        # set transformer
-        if self.partition == 'train':
-            self.transform = transforms.Compose([transforms.RandomResizedCrop(84), #transforms.RandomCrop(84, padding=4),
-                                                 transforms.RandomHorizontalFlip(),
-                                                #  transforms.ColorJitter(brightness=.1,
-                                                #                         contrast=.1,
-                                                #                         saturation=.1,
-                                                #                         hue=.1),
-                                                #  lambda x: np.asarray(x),
-                                                 transforms.ToTensor(),
-                                                 normalize])
-        else:  # 'val' or 'test' ,
-            self.transform = transforms.Compose([transforms.Resize(92), #transforms.Resize(84, interpolation = pil_image.BICUBIC),
-                                                 transforms.CenterCrop(84),
-                                                #  lambda x: np.asarray(x),
-                                                 transforms.ToTensor(),
-                                                 normalize])
-        print('Loading {} dataset -phase {}'.format(category, partition))
-        if category == 'flowers':
-            IMAGE_PATH = os.path.join(self.root, 'flowers', 'jpg')
-            # txt_path = os.path.join(self.root, 'flowers/split', '%s.csv' % self.partition)
-            txt_path = os.path.join(self.root, 'flowers', '%s.csv' % self.partition)
-            lines = [x.strip() for x in open(txt_path, 'r').readlines()][1:]
-            data = []
-            label = []
-            lb = -1
-            self.wnids = []
-            for l in lines:
-                context = l.split(',')
-                name = context[0]
-                wnid = context[1]
-                # path = os.path.join(IMAGE_PATH, wnid, name)
-                path = os.path.join(IMAGE_PATH, name)
-                if wnid not in self.wnids:
-                    self.wnids.append(wnid)
-                    lb += 1
-                data.append(path)
-                label.append(lb)
-            self.data = data
-            self.labels = label
-            self.full_class_list = list(np.unique(np.array(label)))
-            self.label2ind = buildLabelIndex(self.labels)
-        else:
-            print('No such category dataset')
+# class Flowers(data.Dataset):
+#     def __init__(self, root, partition='train', category='flowers'):
+#         super(Flowers, self).__init__()
+#         self.root = '/home/chenghao/few-shot-meta-baseline/materials'
+#         self.partition = partition
+#         self.data_size = [3, 84, 84]
+#         # set normalizer
+#         mean_pix = [x/255.0  for x in [125.3, 123.0, 113.9]]
+#         std_pix = [x/255.0  for x in [63.0, 62.1, 66.7]]
+#         normalize = transforms.Normalize(mean=mean_pix, std=std_pix)
+#         # set transformer
+#         if self.partition == 'train':
+#             self.transform = transforms.Compose([transforms.RandomResizedCrop(84), #transforms.RandomCrop(84, padding=4),
+#                                                  transforms.RandomHorizontalFlip(),
+#                                                 #  transforms.ColorJitter(brightness=.1,
+#                                                 #                         contrast=.1,
+#                                                 #                         saturation=.1,
+#                                                 #                         hue=.1),
+#                                                 #  lambda x: np.asarray(x),
+#                                                  transforms.ToTensor(),
+#                                                  normalize])
+#         else:  # 'val' or 'test' ,
+#             self.transform = transforms.Compose([transforms.Resize(92), #transforms.Resize(84, interpolation = pil_image.BICUBIC),
+#                                                  transforms.CenterCrop(84),
+#                                                 #  lambda x: np.asarray(x),
+#                                                  transforms.ToTensor(),
+#                                                  normalize])
+#         print('Loading {} dataset -phase {}'.format(category, partition))
+#         if category == 'flowers':
+#             IMAGE_PATH = os.path.join(self.root, 'flowers', 'jpg')
+#             # txt_path = os.path.join(self.root, 'flowers/split', '%s.csv' % self.partition)
+#             txt_path = os.path.join(self.root, 'flowers', '%s.csv' % self.partition)
+#             lines = [x.strip() for x in open(txt_path, 'r').readlines()][1:]
+#             data = []
+#             label = []
+#             lb = -1
+#             self.wnids = []
+#             for l in lines:
+#                 context = l.split(',')
+#                 name = context[0]
+#                 wnid = context[1]
+#                 # path = os.path.join(IMAGE_PATH, wnid, name)
+#                 path = os.path.join(IMAGE_PATH, name)
+#                 if wnid not in self.wnids:
+#                     self.wnids.append(wnid)
+#                     lb += 1
+#                 data.append(path)
+#                 label.append(lb)
+#             self.data = data
+#             self.labels = label
+#             self.full_class_list = list(np.unique(np.array(label)))
+#             self.label2ind = buildLabelIndex(self.labels)
+#         else:
+#             print('No such category dataset')
 
-    def __getitem__(self, index):
-        path, label = self.data[index], self.labels[index]
-        image_data = pil_image.open(path).convert('RGB')
-        return image_data, label
+#     def __getitem__(self, index):
+#         path, label = self.data[index], self.labels[index]
+#         image_data = pil_image.open(path).convert('RGB')
+#         return image_data, label
 
-    def __len__(self):
-        return len(self.data)
+#     def __len__(self):
+#         return len(self.data)
 
 class CustomImageFolder(data.Dataset):
     def __init__(self, root, partition='train', category='custom', image_size=84, split_path=None):
@@ -413,17 +413,34 @@ class DataLoader:
         random.seed(rand_seed)
         np.random.seed(rand_seed)
 
-        def load_function(iter_idx):
-            support_data, support_label, query_data, query_label = self.get_task_batch()
-            return support_data, support_label, query_data, query_label
+        class TaskDataset(data.Dataset):
+            def __init__(self, dataloader_inst, size):
+                self.dataloader_inst = dataloader_inst
+                self.size = size
 
-        tnt_dataset = tnt.dataset.ListDataset(
-            elem_list=range(self.epoch_size), load=load_function)
-        data_loader = tnt_dataset.parallel(
-            batch_size=self.batch_size,
+            def __len__(self):
+                return self.size
+
+            def __getitem__(self, idx):
+                return self.dataloader_inst.get_task_batch()
+
+        task_dataset = TaskDataset(self, self.epoch_size)
+        
+        # We define a custom collate_fn because get_task_batch already constructs the batch
+        # dimensions (num_tasks is already baked into the tensors).
+        # We assume batch_size=1 always when using this TaskDataset.
+        def collate_fn(batch):
+            return batch[0] # batch is a list of 1 element
+
+        native_dataloader = data.DataLoader(
+            task_dataset,
+            batch_size=1, # self.batch_size is 1, and get_task_batch() returns a full batched tensor
+            shuffle=(False if self.is_eval_mode else True),
             num_workers=self.num_workers,
-            shuffle=(False if self.is_eval_mode else True))
-        return data_loader
+            collate_fn=collate_fn,
+            pin_memory=True
+        )
+        return native_dataloader
 
     def __call__(self, epoch=0):
         return self.get_iterator(epoch)

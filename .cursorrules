@@ -1,0 +1,27 @@
+# Cursor Rules (CLAUDE.md)
+
+Thiết lập các quy định hành vi cho AI trong Project AGNN.
+
+## 1. Suy nghĩ trước khi Code (Think Before Coding)
+- Luôn nêu rõ các giả định. Nếu không chắc chắn, hãy HỎI.
+- Nếu có nhiều cách hiểu, hãy trình bày tất cả - đừng chọn bừa.
+- Nếu có cách đơn giản hơn, hãy đề xuất.
+- Nếu không rõ ràng, hãy DỪNG LẠI và hỏi.
+
+## 2. Ưu tiên sự đơn giản (Simplicity First)
+- Viết code tối thiểu đủ để giải quyết vấn đề.
+- Không thêm các tính năng thừa.
+- Không trừu tượng hóa code chỉ dùng một lần.
+- Kiểm tra lại: "Một senior engineer có nói đoạn code này quá phức tạp không?"
+
+## 3. Chỉnh sửa "Surgical" (Surgical Changes)
+- Chỉ chạm vào những gì cần thiết.
+- Không "cải thiện" code xung quanh, comment hay format nếu không được yêu cầu.
+- Tuân thủ phong cách code hiện tại của dự án.
+- Xóa các imports/biến/hàm dư thừa do chính các thay đổi của bạn tạo ra.
+
+## 4. Thực thi theo mục tiêu (Goal-Driven Execution)
+- Chuyển đổi task thành các mục tiêu có thể kiểm chứng.
+- Với task nhiều bước, hãy nêu kế hoạch ngắn gọn:
+  1. [Bước] -> kiểm chứng: [check]
+  2. [Bước] -> kiểm chứng: [check]

@@ -462,6 +462,9 @@ def main():
     parser.add_argument('--display_step', type=int, default=200,
                         help='display training information in how many step')
 
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='number of workers for dataloader')
+
     parser.add_argument('--log_step', type=int, default=200,
                         help='log information in how many steps')
 
@@ -649,13 +652,15 @@ def main():
                               num_ways=train_opt['num_ways'],
                               num_shots=train_opt['num_shots'],
                               num_queries=train_opt['num_queries'],
-                              epoch_size=train_opt['iteration'])
+                              epoch_size=train_opt['iteration'],
+                              num_workers=args_opt.num_workers)
     valid_loader = DataLoader(dataset_valid,
                               num_tasks=eval_opt['batch_size'],
                               num_ways=eval_opt['num_ways'],
                               num_shots=eval_opt['num_shots'],
                               num_queries=eval_opt['num_queries'],
-                              epoch_size=eval_opt['iteration'])
+                              epoch_size=eval_opt['iteration'],
+                              num_workers=args_opt.num_workers)
 
     data_loader = {'train': train_loader,
                    'val': valid_loader}
