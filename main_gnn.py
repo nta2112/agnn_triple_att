@@ -7,6 +7,7 @@ try:
     from dataloader import MiniImagenet, TieredImagenet, CUB200, Flowers
 except ImportError:
     pass
+import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
