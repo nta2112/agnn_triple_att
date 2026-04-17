@@ -252,20 +252,32 @@ class CustomImageFolder(data.Dataset):
         box_size = int(image_size * 1.15) if image_size > 0 else 96
         
         if self.partition == 'train':
-            self.transform = transforms.Compose([
-                transforms.Resize(box_size), # Use default BILINEAR interpolation which is much faster
+            # Phần deterministic (dùng khi cache): chỉ Resize
+            self.resize_transform = transforms.Resize(box_size)
+            # Phần augmentation (dùng khi lấy ảnh): crop + augment + tensor
+            self.aug_transform = transforms.Compose([
                 transforms.RandomCrop(image_size, padding=4),
                 transforms.RandomHorizontalFlip(),
                 transforms.ColorJitter(brightness=.1, contrast=.1, saturation=.1, hue=.1),
                 transforms.ToTensor(),
                 normalize
             ])
-        else:  # val or test
+            # transform đầy đủ (không dùng cache)
             self.transform = transforms.Compose([
-                transforms.Resize(box_size),
+                self.resize_transform,
+                self.aug_transform
+            ])
+        else:  # val or test
+            # Val: toàn bộ transform là deterministic → có thể cache tensor
+            self.resize_transform = transforms.Resize(box_size)
+            self.aug_transform = transforms.Compose([
                 transforms.CenterCrop(image_size),
                 transforms.ToTensor(),
                 normalize
+            ])
+            self.transform = transforms.Compose([
+                self.resize_transform,
+                self.aug_transform
             ])
             
         print('Loading {} dataset - phase {} with image_size {}'.format(category, partition, image_size))
@@ -332,26 +344,57 @@ class CustomImageFolder(data.Dataset):
     # ── Image Cache (tối ưu tốc độ DataLoader) ──────────────────────────────
     def cache_to_memory(self):
         """
-        Pre-load toàn bộ ảnh vào RAM dưới dạng PIL Image.
-        → Loại bỏ disk I/O và PIL.open() overhead trong suốt quá trình train.
-        → Vẫn áp dụng random augmentation mỗi lần (RandomCrop, ColorJitter...)
-          vì chỉ cache ảnh gốc, không cache tensor đã transform.
-        → Trên Colab (Linux, fork), cache được share qua copy-on-write:
-          mỗi DataLoader worker dùng chung vùng nhớ, không cần copy.
+        Pre-load ảnh vào RAM SAU khi Resize để tránh OOM.
+
+        Lý do cache SAU Resize (không cache ảnh gốc):
+        - Ảnh gốc từ camera có thể là 3024×4032 (~37MB/ảnh uncompressed)
+        - Ảnh SAU Resize(257px) chỉ ~0.2MB/ảnh
+        - 5000 ảnh × 37MB = 185GB → OOM | × 0.2MB = 1GB → OK
+
+        Random augmentation vẫn hoạt động bình thường:
+        - Cache PIL ảnh đã resize (deterministic)
+        - aug_transform (RandomCrop, ColorJitter...) áp dụng MỖI LẦN LẤY ẢNH
+          → diversity augmentation được bảo toàn
+
+        Val set (deterministic hoàn toàn): có thể cache tensor luôn
+        để tránh ToTensor() overhead lặp đi lặp lại.
         """
         if hasattr(self, '_img_cache') and self._img_cache is not None:
             return  # Already cached
-        print(f'[DataLoader] Caching {len(self.data)} images to RAM (PIL)...')
-        self._img_cache = [None] * len(self.data)
-        for i, path in enumerate(self.data):
-            self._img_cache[i] = pil_image.open(path).convert('RGB')
-        print(f'[DataLoader] Cache ready. {len(self._img_cache)} images in RAM.')
+
+        n = len(self.data)
+        print(f'[DataLoader] Caching {n} images to RAM (post-resize PIL)...')
+
+        if self.partition in ('val', 'test'):
+            # Val/test: toàn bộ transform deterministic → cache tensor thẳng
+            self._img_cache = [None] * n
+            for i, path in enumerate(self.data):
+                pil = pil_image.open(path).convert('RGB')
+                self._img_cache[i] = self.transform(pil)   # cache tensor [C,H,W]
+            print(f'[DataLoader] Val cache ready ({n} tensors, post-transform).')
+            self._cache_is_tensor = True
+        else:
+            # Train: cache PIL sau Resize để aug_transform vẫn ngẫu nhiên
+            self._img_cache = [None] * n
+            for i, path in enumerate(self.data):
+                pil = pil_image.open(path).convert('RGB')
+                self._img_cache[i] = self.resize_transform(pil)  # cache PIL đã resize
+            print(f'[DataLoader] Train cache ready ({n} PIL, post-resize).')
+            self._cache_is_tensor = False
 
     def _get_pil(self, index):
-        """Get PIL image: từ cache nếu đã cache, ngược lại đọc từ disk."""
+        """
+        Trả về PIL image từ cache (đã resize) hoặc đọc từ disk.
+        Kết quả luôn là PIL Image (chưa augment), để aug_transform áp dụng sau.
+        """
         if hasattr(self, '_img_cache') and self._img_cache is not None:
-            return self._img_cache[index]
-        return pil_image.open(self.data[index]).convert('RGB')
+            if getattr(self, '_cache_is_tensor', False):
+                # Val cache: đã là tensor, trả về thẳng (DataLoader sẽ bypass aug_transform)
+                return self._img_cache[index]
+            return self._img_cache[index]   # PIL đã resize
+        # Fallback: đọc từ disk và resize
+        pil = pil_image.open(self.data[index]).convert('RGB')
+        return self.resize_transform(pil)
 
 def allocation_amount(num_cls, amount):
     a = [np.random.randint(0, amount) for i in range(num_cls-1)]
@@ -380,8 +423,14 @@ class DataLoader:
         self.full_class_list = dataset.full_class_list
         self.label2ind = dataset.label2ind
         self.transform = dataset.transform
+        # aug_transform: phần transform áp dụng sau khi lấy ảnh từ cache
+        # Train: aug_transform = RandomCrop + ColorJitter + ToTensor + Normalize
+        # Val  : _cache_is_tensor=True nên không cần transform nữa
+        self.aug_transform = getattr(dataset, 'aug_transform', dataset.transform)
         self.phase = dataset.partition
         self.is_eval_mode = (self.phase == 'test') or (self.phase == 'val')
+        # Flag: val dataset cache tensor đã đầy đủ, không cần transform thêm
+        self._cache_is_tensor = getattr(dataset, '_cache_is_tensor', False)
 
     def get_task_batch(self):
         """
@@ -414,16 +463,25 @@ class DataLoader:
             for c_idx, cls in enumerate(task_class_list):
                 data_idx = random.sample(self.label2ind[cls], self.num_shots + self.num_queries)
 
-                # Dùng _get_pil() → lấy từ RAM cache thay vì PIL.open() từ disk
-                pil_imgs = [self.dataset._get_pil(i) for i in data_idx]
+                # _get_pil(): trả PIL đã resize (train) hoặc tensor đầy đủ (val)
+                cached_items = [self.dataset._get_pil(i) for i in data_idx]
 
-                for i in range(self.num_shots):
-                    support_data[t_idx, c_idx * self.num_shots + i] = self.transform(pil_imgs[i])
-                    support_label[t_idx, c_idx * self.num_shots + i] = c_idx
-
-                for i in range(self.num_queries):
-                    query_data[t_idx, c_idx * self.num_queries + i] = self.transform(pil_imgs[self.num_shots + i])
-                    query_label[t_idx, c_idx * self.num_queries + i] = c_idx
+                if self._cache_is_tensor:
+                    # Val: cache là tensor [C,H,W] → gán trực tiếp, không transform
+                    for i in range(self.num_shots):
+                        support_data[t_idx, c_idx * self.num_shots + i] = cached_items[i]
+                        support_label[t_idx, c_idx * self.num_shots + i] = c_idx
+                    for i in range(self.num_queries):
+                        query_data[t_idx, c_idx * self.num_queries + i] = cached_items[self.num_shots + i]
+                        query_label[t_idx, c_idx * self.num_queries + i] = c_idx
+                else:
+                    # Train: cache là PIL đã resize → áp dụng aug_transform (ngẫu nhiên)
+                    for i in range(self.num_shots):
+                        support_data[t_idx, c_idx * self.num_shots + i] = self.aug_transform(cached_items[i])
+                        support_label[t_idx, c_idx * self.num_shots + i] = c_idx
+                    for i in range(self.num_queries):
+                        query_data[t_idx, c_idx * self.num_queries + i] = self.aug_transform(cached_items[self.num_shots + i])
+                        query_label[t_idx, c_idx * self.num_queries + i] = c_idx
 
         return support_data, support_label, query_data, query_label
 
