@@ -401,14 +401,15 @@ class AGNN(nn.Module):
                                device=point_node.device).fill_(1.0 / num_ways)
         lab_new = torch.cat([one_hot_fin, zero_pad], dim=1)
 
-        # ── Node self-attention + fusion (ablation: self_att) ─────────────────
+        # ── Node self-attention + fusion (ablation: self_att) ────────────────
         if 'no_self_att' not in self.ablation_flags:
             # Node self-attention via a transformer block
             att = self.slf_attn(point_node, point_node)
 
-            # Label self-attention
+            # Label self-attention: C^y = softmax(Y Y^T) — paper Eq. 4
             lab_t2 = torch.transpose(lab_new, 1, 2)
-            att_l = torch.bmm(lab_new, lab_t2)
+            # att_l = torch.bmm(lab_new, lab_t2)
+            att_l = torch.softmax(torch.bmm(lab_new, lab_t2), dim=-1)
 
             # Fusion layer: combine node-att and label-att
             mask_c = torch.cat([att.unsqueeze(1), att_l.unsqueeze(1)], dim=1)

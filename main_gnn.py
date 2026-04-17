@@ -242,7 +242,7 @@ class AGNNTrainer(object):
             self.eval_opt['batch_size'],
             self.arg.device)
 
-        query_edge_loss_generations = []
+        query_ce_loss_generations = []
         query_node_cls_acc_generations = []
         # set as eval mode
         self.enc_module.eval()
@@ -271,8 +271,8 @@ class AGNNTrainer(object):
                                                 edge_feature_gp,
                                                 support_label)
 
-                query_node_cls_acc_generations, query_edge_loss_generations = \
-                    self.compute_eval_loss_pred(query_edge_loss_generations,
+                query_node_cls_acc_generations, query_ce_loss_generations = \
+                    self.compute_eval_loss_pred(query_ce_loss_generations,
                                                 query_node_cls_acc_generations,
                                                 all_label_in_edge,
                                                 point_similarity,
@@ -285,9 +285,9 @@ class AGNNTrainer(object):
         # logging
         if log_flag:
             self.log.info('------------------------------------')
-            self.log.info('step : {}  {}_edge_loss : {}  {}_node_acc : {}'.format(
+            self.log.info('step : {}  {}_ce_loss : {}  {}_node_acc : {}'.format(
                 self.global_step, partition,
-                np.array(query_edge_loss_generations).mean(),
+                np.array(query_ce_loss_generations).mean(),
                 partition,
                 np.array(query_node_cls_acc_generations).mean()))
 
@@ -311,92 +311,47 @@ class AGNNTrainer(object):
                                 support_label,
                                 query_label):
         """
-        compute the total loss, query classification loss and query classification accuracy
-        :param all_label_in_edge: ground truth label in edge form of point graph
-        :param point_similarities: prediction edges of point graph
-        :param node_similarities_l2: l2 norm of node similarities
-        :param query_edge_mask: mask for queries
-        :param evaluation_mask: mask for evaluation (for unsupervised setting)
-        :param num_supports: number of samples in support set
-        :param support_label: label of support set
-        :param query_label: label of query set
-        :param distribution_similarities: distribution-level similarities
-        :return: total loss
-                 query classification accuracy
-                 query classification loss
+        Compute total loss, query classification accuracy, and per-generation CE loss.
+        Loss = Cross-Entropy tại mỗi GNN layer — paper Eq. 13.
+        BCE edge loss (từ DPGN) đã được loại bỏ để khớp đúng với paper AGNN Triple Attention.
         """
 
-        # Point Loss
-        total_edge_loss_generations_instance = [
-            self.edge_loss((1 - point_similarity), (1 - all_label_in_edge))
-            for point_similarity
-            in point_similarities]
-
-        total_edge_loss_generations = total_edge_loss_generations_instance
-
-        pos_query_edge_loss_generations = [
-            torch.sum(total_edge_loss_generation * query_edge_mask * all_label_in_edge * evaluation_mask)
-            / torch.sum(query_edge_mask * all_label_in_edge * evaluation_mask)
-            for total_edge_loss_generation
-            in total_edge_loss_generations]
-
-        neg_query_edge_loss_generations = [
-            torch.sum(total_edge_loss_generation * query_edge_mask * (1 - all_label_in_edge) * evaluation_mask)
-            / torch.sum(query_edge_mask * (1 - all_label_in_edge) * evaluation_mask)
-            for total_edge_loss_generation
-            in total_edge_loss_generations]
-
-        # weighted edge loss for balancing pos/neg
-        query_edge_loss_generations = [
-            pos_query_edge_loss_generation + neg_query_edge_loss_generation
-            for (pos_query_edge_loss_generation, neg_query_edge_loss_generation)
-            in zip(pos_query_edge_loss_generations, neg_query_edge_loss_generations)]
-
-        # (normalized) l2 loss
-        query_node_pred_generations_ = [
-            torch.bmm(node_similarity_l2[:, num_supports:, :num_supports],
-                        one_hot_encode(self.train_opt['num_ways'], support_label.long(), self.arg.device))
-            for node_similarity_l2
-            in node_similarities_l2]
-
-        # prediction
+        # ── Dự đoán nhãn query từ edge weights tại mỗi generation ────────────
+        # score[query_i, class_c] = sum of edge weights từ query_i đến các support của class c
         query_node_pred_generations = [
-            torch.bmm(point_similarity[:, num_supports:, :num_supports],
-                        one_hot_encode(self.train_opt['num_ways'], support_label.long(), self.arg.device))
-            for point_similarity
-            in point_similarities]
+            torch.bmm(
+                point_similarity[:, num_supports:, :num_supports],
+                one_hot_encode(self.train_opt['num_ways'], support_label.long(), self.arg.device)
+            )
+            for point_similarity in point_similarities
+        ]
 
-        # Calculate prediction loss correctly for any number of queries
-        query_node_pred_loss = []
-        for query_node_pred_generation in query_node_pred_generations_:
-            temp_query_node_pred_generation = query_node_pred_generation.contiguous().view(-1, query_node_pred_generation.shape[-1])
-            temp_query_label = query_label.long().contiguous().view(-1, )
-            temp_loss = self.pred_loss(temp_query_node_pred_generation, temp_query_label).mean()
-            query_node_pred_loss.append(temp_loss)
+        # ── Cross-Entropy loss tại mỗi generation — paper Eq. 13 ─────────────
+        query_node_ce_loss = []
+        for query_node_pred in query_node_pred_generations:
+            pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
+            label_flat = query_label.long().contiguous().view(-1)
+            query_node_ce_loss.append(self.pred_loss(pred_flat, label_flat).mean())
 
-        # train accuracy
+        # ── Train accuracy ────────────────────────────────────────────────────
         query_node_acc_generations = [
-            torch.eq(torch.max(query_node_pred_generation, -1)[1], query_label.long()).float().mean()
-            for query_node_pred_generation
-            in query_node_pred_generations]
+            torch.eq(torch.max(query_node_pred, -1)[1], query_label.long()).float().mean()
+            for query_node_pred in query_node_pred_generations
+        ]
 
-        # total loss
-        total_loss_generations = [
-            query_edge_loss_generation + 0.1 * query_node_pred_loss_
-            for (query_edge_loss_generation, query_node_pred_loss_)
-            in zip(query_edge_loss_generations, query_node_pred_loss)]
-
-        # compute total loss
+        # ── Multi-layer weighted sum — paper Eq. 13 ───────────────────────────
+        # Layer cuối: weight = 1.0; các layer trước: weight = generation_weight (< 1.0)
         total_loss = []
         num_loss = self.config['num_loss_generation']
         for l in range(num_loss - 1):
-            total_loss += [total_loss_generations[l].view(-1) * self.config['generation_weight']]
-        total_loss += [total_loss_generations[-1].view(-1) * 1.0]
+            total_loss += [query_node_ce_loss[l].view(-1) * self.config['generation_weight']]
+        total_loss += [query_node_ce_loss[-1].view(-1) * 1.0]
         total_loss = torch.mean(torch.cat(total_loss, 0))
-        return total_loss, query_node_acc_generations, query_edge_loss_generations
+
+        return total_loss, query_node_acc_generations, query_node_ce_loss
 
     def compute_eval_loss_pred(self,
-                               query_edge_losses,
+                               query_ce_losses,
                                query_node_accs,
                                all_label_in_edge,
                                point_similarities,
@@ -406,44 +361,30 @@ class AGNNTrainer(object):
                                support_label,
                                query_label):
         """
-        compute the query classification loss and query classification accuracy
-        :param query_edge_losses: container for losses of queries' edges
-        :param query_node_accs: container for classification accuracy of queries
-        :param all_label_in_edge: ground truth label in edge form of point graph
-        :param point_similarities: prediction edges of point graph
-        :param query_edge_mask: mask for queries
-        :param evaluation_mask: mask for evaluation (for unsupervised setting)
-        :param num_supports: number of samples in support set
-        :param support_label: label of support set
-        :param query_label: label of query set
-        :return: query classification loss
-                 query classification accuracy
+        Compute query classification CE loss and accuracy during evaluation.
+        Dùng Cross-Entropy thay BCE edge loss để nhất quán với train loss (paper Eq. 13).
         """
-
+        # Lấy edge weights của generation cuối cùng
         point_similarity = point_similarities[-1]
-        full_edge_loss = self.edge_loss(1 - point_similarity, 1 - all_label_in_edge)
 
-        pos_query_edge_loss = torch.sum(full_edge_loss * query_edge_mask * all_label_in_edge * evaluation_mask) / torch.sum(
-            query_edge_mask * all_label_in_edge * evaluation_mask)
-        neg_query_edge_loss = torch.sum(
-            full_edge_loss * query_edge_mask * (1 - all_label_in_edge) * evaluation_mask) / torch.sum(
-            query_edge_mask * (1 - all_label_in_edge) * evaluation_mask)
-
-        # weighted loss for balancing pos/neg
-        query_edge_loss = pos_query_edge_loss + neg_query_edge_loss
-
-        # prediction
+        # Dự đoán nhãn query từ edge weights
         query_node_pred = torch.bmm(
             point_similarity[:, num_supports:, :num_supports],
-            one_hot_encode(self.eval_opt['num_ways'], support_label.long(), self.arg.device))
+            one_hot_encode(self.eval_opt['num_ways'], support_label.long(), self.arg.device)
+        )
 
-        # test accuracy
+        # Cross-Entropy loss
+        pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
+        label_flat = query_label.long().contiguous().view(-1)
+        query_ce_loss = self.pred_loss(pred_flat, label_flat).mean()
+
+        # Accuracy
         query_node_acc = torch.eq(torch.max(query_node_pred, -1)[1], query_label.long()).float().mean()
 
-        query_edge_losses += [query_edge_loss.item()]
-        query_node_accs += [query_node_acc.item()]
+        query_ce_losses  += [query_ce_loss.item()]
+        query_node_accs  += [query_node_acc.item()]
 
-        return query_node_accs, query_edge_losses
+        return query_node_accs, query_ce_losses
 
 
 def main():
@@ -650,6 +591,15 @@ def main():
     else:
         dataset_train = dataset(root=args_opt.dataset_root, partition='train')
         dataset_valid = dataset(root=args_opt.dataset_root, partition='val')
+
+    # ── Pre-load ảnh vào RAM để tối ưu tốc độ DataLoader ────────────────────
+    # cache_to_memory() load PIL images vào một list trong main process.
+    # Trên Colab/Kaggle (Linux, fork-based workers), các worker chia sẻ
+    # bộ nhớ qua copy-on-write → không tốn RAM gấp đôi.
+    # Nếu dataset quá lớn (> 8GB RAM), comment 2 dòng dưới để bỏ cache.
+    if hasattr(dataset_train, 'cache_to_memory'):
+        dataset_train.cache_to_memory()
+        dataset_valid.cache_to_memory()
 
     train_loader = DataLoader(dataset_train,
                               num_tasks=train_opt['batch_size'],

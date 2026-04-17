@@ -323,11 +323,35 @@ class CustomImageFolder(data.Dataset):
 
     def __getitem__(self, index):
         path, label = self.data[index], self.labels[index]
-        image_data = pil_image.open(path).convert('RGB')
+        image_data = self._get_pil(index)
         return image_data, label
 
     def __len__(self):
         return len(self.data)
+
+    # ── Image Cache (tối ưu tốc độ DataLoader) ──────────────────────────────
+    def cache_to_memory(self):
+        """
+        Pre-load toàn bộ ảnh vào RAM dưới dạng PIL Image.
+        → Loại bỏ disk I/O và PIL.open() overhead trong suốt quá trình train.
+        → Vẫn áp dụng random augmentation mỗi lần (RandomCrop, ColorJitter...)
+          vì chỉ cache ảnh gốc, không cache tensor đã transform.
+        → Trên Colab (Linux, fork), cache được share qua copy-on-write:
+          mỗi DataLoader worker dùng chung vùng nhớ, không cần copy.
+        """
+        if hasattr(self, '_img_cache') and self._img_cache is not None:
+            return  # Already cached
+        print(f'[DataLoader] Caching {len(self.data)} images to RAM (PIL)...')
+        self._img_cache = [None] * len(self.data)
+        for i, path in enumerate(self.data):
+            self._img_cache[i] = pil_image.open(path).convert('RGB')
+        print(f'[DataLoader] Cache ready. {len(self._img_cache)} images in RAM.')
+
+    def _get_pil(self, index):
+        """Get PIL image: từ cache nếu đã cache, ngược lại đọc từ disk."""
+        if hasattr(self, '_img_cache') and self._img_cache is not None:
+            return self._img_cache[index]
+        return pil_image.open(self.data[index]).convert('RGB')
 
 def allocation_amount(num_cls, amount):
     a = [np.random.randint(0, amount) for i in range(num_cls-1)]
@@ -360,50 +384,47 @@ class DataLoader:
         self.is_eval_mode = (self.phase == 'test') or (self.phase == 'val')
 
     def get_task_batch(self):
-        # init task batch data
-        support_data, support_label, query_data, query_label = [], [], [], []
-        for _ in range(self.num_ways * self.num_shots):
-            data = np.zeros(shape=[self.num_tasks] + self.data_size,
-                            dtype='float32')
-            label = np.zeros(shape=[self.num_tasks],
-                             dtype='float32')
-            support_data.append(data)
-            support_label.append(label)
-        for _ in range(self.num_ways * self.num_queries):
-            data = np.zeros(shape=[self.num_tasks] + self.data_size,
-                            dtype='float32')
-            label = np.zeros(shape=[self.num_tasks],
-                                dtype='float32')
-            query_data.append(data)
-            query_label.append(label)
+        """
+        Build a batch of few-shot tasks as PyTorch tensors.
 
-        # random list
-        # amount_q = allocation_amount(self.num_ways, self.num_ways*(self.num_queries-1))+1
-        # for each task
+        Tối ưu so với bản gốc:
+        - Dùng torch.empty() cấp phát tensor trực tiếp (không qua numpy list)
+        - Dùng _get_pil() để lấy ảnh từ cache RAM (không PIL.open() từ disk)
+        - Không cần torch.stack() / from_numpy() ở cuối → giảm memory copies
+
+        Output shapes:
+            support_data  : [num_tasks, num_ways*num_shots,   C, H, W]
+            support_label : [num_tasks, num_ways*num_shots]
+            query_data    : [num_tasks, num_ways*num_queries, C, H, W]
+            query_label   : [num_tasks, num_ways*num_queries]
+        """
+        C, H, W = self.data_size
+        n_support = self.num_ways * self.num_shots
+        n_query   = self.num_ways * self.num_queries
+
+        # Pre-allocate tensors — tránh list + stack overhead
+        support_data  = torch.empty(self.num_tasks, n_support, C, H, W,  dtype=torch.float32)
+        support_label = torch.empty(self.num_tasks, n_support,           dtype=torch.float32)
+        query_data    = torch.empty(self.num_tasks, n_query,   C, H, W,  dtype=torch.float32)
+        query_label   = torch.empty(self.num_tasks, n_query,             dtype=torch.float32)
+
         for t_idx in range(self.num_tasks):
-            q_count = 0
             task_class_list = random.sample(self.full_class_list, self.num_ways)
-            # for each sampled class in task
-            # ind_q = torch.randperm(self.num_ways)[0]
-            for c_idx in range(self.num_ways):
-                data_idx = random.sample(self.label2ind[task_class_list[c_idx]], self.num_shots + self.num_queries)
-                # data_idx = random.sample(self.label2ind[task_class_list[c_idx]], self.num_shots + amount_q[c_idx])
-                class_data_list = [self.dataset[img_idx][0] for img_idx in data_idx]
-  
-                for i_idx in range(self.num_shots):
-                    # set data
-                    support_data[i_idx + c_idx * self.num_shots][t_idx] = self.transform(class_data_list[i_idx])
-                    support_label[i_idx + c_idx * self.num_shots][t_idx] = c_idx
-                # load sample for query set
-                for i_idx in range(self.num_queries):
-                    query_data[i_idx + c_idx * self.num_queries][t_idx] = \
-                        self.transform(class_data_list[self.num_shots + i_idx])
-                    query_label[i_idx + c_idx * self.num_queries][t_idx] = c_idx
 
-        support_data = torch.stack([torch.from_numpy(data).float() for data in support_data], 1)
-        support_label = torch.stack([torch.from_numpy(label).float() for label in support_label], 1)
-        query_data = torch.stack([torch.from_numpy(data).float() for data in query_data], 1)
-        query_label = torch.stack([torch.from_numpy(label).float() for label in query_label], 1)
+            for c_idx, cls in enumerate(task_class_list):
+                data_idx = random.sample(self.label2ind[cls], self.num_shots + self.num_queries)
+
+                # Dùng _get_pil() → lấy từ RAM cache thay vì PIL.open() từ disk
+                pil_imgs = [self.dataset._get_pil(i) for i in data_idx]
+
+                for i in range(self.num_shots):
+                    support_data[t_idx, c_idx * self.num_shots + i] = self.transform(pil_imgs[i])
+                    support_label[t_idx, c_idx * self.num_shots + i] = c_idx
+
+                for i in range(self.num_queries):
+                    query_data[t_idx, c_idx * self.num_queries + i] = self.transform(pil_imgs[self.num_shots + i])
+                    query_label[t_idx, c_idx * self.num_queries + i] = c_idx
+
         return support_data, support_label, query_data, query_label
 
     def get_iterator(self, epoch=0):
