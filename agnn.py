@@ -413,7 +413,8 @@ class AGNN(nn.Module):
 
             # Fusion layer: combine node-att and label-att
             mask_c = torch.cat([att.unsqueeze(1), att_l.unsqueeze(1)], dim=1)
-            new_mask = self.fusion(mask_c).squeeze(1)
+            # new_mask = self.fusion(mask_c).squeeze(1)
+            new_mask = torch.softmax(self.fusion(mask_c).squeeze(1), dim=-1)
             a = 0.5
             # point_node = torch.bmm(new_mask, point_node)
             a_feat = 0.8
