@@ -415,7 +415,9 @@ class AGNN(nn.Module):
             mask_c = torch.cat([att.unsqueeze(1), att_l.unsqueeze(1)], dim=1)
             new_mask = self.fusion(mask_c).squeeze(1)
             a = 0.5
-            point_node = torch.bmm(new_mask, point_node)
+            # point_node = torch.bmm(new_mask, point_node)
+            a_feat = 0.8
+            point_node = (point_node * a_feat) + (torch.bmm(new_mask, point_node) * (1 - a_feat))
             lab_new = torch.mul(torch.bmm(new_mask, lab_new), 1 - a) + torch.mul(lab_new, a)
         # (w/o self_att: point_node stays as backbone output, lab_new unreweighted)
 
