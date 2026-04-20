@@ -62,9 +62,12 @@ train_opt['batch_size']  = 2            # 2 tasks/batch — giới hạn VRAM Re
 train_opt['iteration']   = 20000
 
 # Learning rate: paper dùng 1e-3 với ResNet12 train-from-scratch.
-# ResNet50 pretrained cần lr nhỏ hơn để không phá vỡ pretrained weights.
-# Dùng 1e-4 là hợp lý (50× lớn hơn 2e-6 cũ, nhưng vẫn conservative).
-train_opt['lr']          = 1e-4
+# Với ResNet50: dùng 2 learning rate riêng biệt để ổn định training:
+# - Backbone: dùng LR siêu nhỏ để bảo toàn pre-trained weights.
+# - GNN: dùng LR cao hơn (1e-4) để học nhanh đặc trưng mới.
+train_opt['lr_enc']      = 1e-5
+train_opt['lr_gnn']      = 1e-4
+train_opt['lr']          = 1e-4        # Fallback nếu không có lr_enc/lr_gnn
 
 train_opt['weight_decay'] = 5e-4       # Tăng nhẹ so với 1e-4 cũ → regularize tốt hơn
 
