@@ -139,10 +139,26 @@ class AGNNTrainer(object):
 
             # log training info
             if self.global_step % self.arg.log_step == 0:
-                self.log.info('step : {}  train_edge_loss : {}  node_acc : {}'.format(
+                # ── Gradient Norm Monitoring ──────────────────────────────────
+                # Calculate global grad norm for backbone and GNN separately
+                enc_grad_norm = 0.0
+                for p in self.enc_module.parameters():
+                    if p.grad is not None:
+                        enc_grad_norm += p.grad.detach().data.norm(2).item() ** 2
+                enc_grad_norm = enc_grad_norm ** 0.5
+
+                gnn_grad_norm = 0.0
+                for p in self.gnn_module.parameters():
+                    if p.grad is not None:
+                        gnn_grad_norm += p.grad.detach().data.norm(2).item() ** 2
+                gnn_grad_norm = gnn_grad_norm ** 0.5
+
+                self.log.info('step : {}  loss : {:.4f}  acc : {:.4f}  grad_enc : {:.4f}  grad_gnn : {:.4f}'.format(
                     self.global_step,
                     query_edge_loss_generations[-1],
-                    query_node_cls_acc_generations[-1]))
+                    query_node_cls_acc_generations[-1],
+                    enc_grad_norm,
+                    gnn_grad_norm))
 
             # evaluation
             if self.global_step > 0 and self.global_step % self.eval_opt['interval'] == 0:
