@@ -56,9 +56,9 @@ class AGNNTrainer(object):
         self.module_params = list(self.enc_module.parameters()) + list(self.gnn_module.parameters())
 
         # set optimizer
-        # Use separate learning rates if provided, fallback to default 'lr'
-        lr_enc = self.train_opt.get('lr_enc', self.train_opt['lr'])
-        lr_gnn = self.train_opt.get('lr_gnn', self.train_opt['lr'])
+        # Use separate learning rates if provided, fallback to default 'lr' or safe default
+        lr_enc = self.train_opt.get('lr_enc', self.train_opt.get('lr', 1e-4))
+        lr_gnn = self.train_opt.get('lr_gnn', self.train_opt.get('lr', 1e-4))
 
         self.optimizer = optim.Adam([
             {'params': self.enc_module.parameters(), 'lr': lr_enc, 'initial_lr': lr_enc},
