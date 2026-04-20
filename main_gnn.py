@@ -136,7 +136,7 @@ class AGNNTrainer(object):
 
             # adjust learning rate
             adjust_learning_rate(optimizers=[self.optimizer],
-                                 lr=self.train_opt['lr'],
+                                 lr=self.train_opt.get('lr', 1e-4),
                                  iteration=self.global_step,
                                  dec_lr_step=self.train_opt['dec_lr'],
                                  lr_adj_base =self.train_opt['lr_adj_base'])
