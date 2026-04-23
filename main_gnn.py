@@ -357,9 +357,10 @@ class AGNNTrainer(object):
         ]
 
         # ── Cross-Entropy loss dựa trên L2 Similarity ─────────────────────────
+        # Scale (Temperature) giúp logits lớn hơn, tránh việc loss bị kẹt ở ln(5)
         query_node_ce_loss = []
         for query_node_pred_l2 in query_node_pred_generations_l2:
-            pred_flat  = query_node_pred_l2.contiguous().view(-1, query_node_pred_l2.shape[-1])
+            pred_flat  = (query_node_pred_l2 * 10.0).contiguous().view(-1, query_node_pred_l2.shape[-1])
             label_flat = query_label.long().contiguous().view(-1)
             query_node_ce_loss.append(self.pred_loss(pred_flat, label_flat).mean())
 
