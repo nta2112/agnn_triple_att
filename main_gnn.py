@@ -316,8 +316,7 @@ class AGNNTrainer(object):
         BCE edge loss (từ DPGN) đã được loại bỏ để khớp đúng với paper AGNN Triple Attention.
         """
 
-        # ── Dự đoán nhãn query từ edge weights tại mỗi generation ────────────
-        # score[query_i, class_c] = sum of edge weights từ query_i đến các support của class c
+        # ── Dự đoán nhãn query (để tính Accuracy) từ point_similarity ─────────
         query_node_pred_generations = [
             torch.bmm(
                 point_similarity[:, num_supports:, :num_supports],
@@ -326,12 +325,38 @@ class AGNNTrainer(object):
             for point_similarity in point_similarities
         ]
 
-        # ── Cross-Entropy loss tại mỗi generation — paper Eq. 13 ─────────────
+        # ── Dự đoán nhãn query (để tính Loss CE) từ node_similarity_l2 ────────
+        query_node_pred_generations_l2 = [
+            torch.bmm(
+                node_similarity_l2[:, num_supports:, :num_supports],
+                one_hot_encode(self.train_opt['num_ways'], support_label.long(), self.arg.device)
+            )
+            for node_similarity_l2 in node_similarities_l2
+        ]
+
+        # ── Cross-Entropy loss (Node) dựa trên L2 Similarity ──────────────────
         query_node_ce_loss = []
-        for query_node_pred in query_node_pred_generations:
-            pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
+        for query_node_pred_l2 in query_node_pred_generations_l2:
+            pred_flat  = query_node_pred_l2.contiguous().view(-1, query_node_pred_l2.shape[-1])
             label_flat = query_label.long().contiguous().view(-1)
             query_node_ce_loss.append(self.pred_loss(pred_flat, label_flat).mean())
+
+        # ── Balanced BCE Loss (Edge) - Đúng chuẩn bản gốc ────────────────────
+        query_edge_bce_loss = []
+        for point_similarity in point_similarities:
+            # 1. Tính BCE loss (đảo ngược xác suất theo bản gốc)
+            bce_loss = self.edge_loss(1.0 - point_similarity, 1.0 - all_label_in_edge)
+            
+            # 2. Tách Loss cho Positive Edges (Cùng lớp)
+            pos_loss = torch.sum(bce_loss * query_edge_mask * all_label_in_edge * evaluation_mask) \
+                       / (torch.sum(query_edge_mask * all_label_in_edge * evaluation_mask) + 1e-6)
+            
+            # 3. Tách Loss cho Negative Edges (Khác lớp)
+            neg_loss = torch.sum(bce_loss * query_edge_mask * (1.0 - all_label_in_edge) * evaluation_mask) \
+                       / (torch.sum(query_edge_mask * (1.0 - all_label_in_edge) * evaluation_mask) + 1e-6)
+            
+            # 4. Cộng lại (Cân bằng)
+            query_edge_bce_loss.append(pos_loss + neg_loss)
 
         # ── Train accuracy ────────────────────────────────────────────────────
         query_node_acc_generations = [
@@ -339,13 +364,22 @@ class AGNNTrainer(object):
             for query_node_pred in query_node_pred_generations
         ]
 
-        # ── Multi-layer weighted sum — paper Eq. 13 ───────────────────────────
-        # Layer cuối: weight = 1.0; các layer trước: weight = generation_weight (< 1.0)
+        # ── Multi-layer weighted sum (CE + BCE) ───────────────────────────────
+        # Kết hợp hai loại loss dựa trên loss_indicator: [BCE_weight, CE_weight, ...]
+        w_bce = self.train_opt['loss_indicator'][0]
+        w_ce  = self.train_opt['loss_indicator'][1]
+        
         total_loss = []
         num_loss = self.config['num_loss_generation']
-        for l in range(num_loss - 1):
-            total_loss += [query_node_ce_loss[l].view(-1) * self.config['generation_weight']]
-        total_loss += [query_node_ce_loss[-1].view(-1) * 1.0]
+        for l in range(num_loss):
+            gen_w = self.config['generation_weight'] if l < num_loss - 1 else 1.0
+            
+            # Cộng dồn loss của generation thứ l
+            l_ce  = query_node_ce_loss[l] * w_ce
+            l_bce = query_edge_bce_loss[l] * w_bce
+            
+            total_loss += [(l_ce + l_bce).view(-1) * gen_w]
+            
         total_loss = torch.mean(torch.cat(total_loss, 0))
 
         return total_loss, query_node_acc_generations, query_node_ce_loss

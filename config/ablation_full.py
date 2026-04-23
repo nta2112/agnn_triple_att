@@ -77,9 +77,8 @@ train_opt['dropout']     = 0.1         # Giảm từ 0.2 → 0.1: dataset custom
 
 # loss_indicator: [edge_loss, node_l2_loss, dist_loss]
 # Sau khi đã sửa loss = CE only, chỉ node_l2 còn được ref trong agnn.py
-# Đặt [1, 1, 0] để backward-compatibility, không ảnh hưởng vì compute_train_loss
-# chỉ dùng point_similarities (không dùng loss_indicator thêm nữa)
-train_opt['loss_indicator'] = [1, 1, 0]
+# Đặt [1, 0.1, 0] để khớp chính xác tỷ lệ của bản gốc (BCE + 0.1 * CE)
+train_opt['loss_indicator'] = [1, 0.1, 0]
 
 # ── Evaluation ───────────────────────────────────────────────
 eval_opt = OrderedDict()

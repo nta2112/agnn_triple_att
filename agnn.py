@@ -435,7 +435,7 @@ class AGNN(nn.Module):
             else:
                 point_node = point_node_out  # replace instead of accumulate
 
-            point_similarities.append(point_edge * self.loss_indicator[0])
-            node_similarities_l2.append(node_similarity_l2 * self.loss_indicator[1])
+            point_similarities.append(point_edge)
+            node_similarities_l2.append(node_similarity_l2)
 
         return point_similarities, node_similarities_l2
