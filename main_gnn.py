@@ -285,7 +285,7 @@ class AGNNTrainer(object):
                 last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
 
                 # run the AGNN model
-                point_similarity, _  = self.gnn_module(second_last_layer_data,
+                point_similarity, node_similarities_l2 = self.gnn_module(second_last_layer_data,
                                                 last_layer_data,
                                                 node_feature_gd,
                                                 edge_feature_gp,
@@ -296,6 +296,7 @@ class AGNNTrainer(object):
                                                 query_node_cls_acc_generations,
                                                 all_label_in_edge,
                                                 point_similarity,
+                                                node_similarities_l2,
                                                 query_edge_mask,
                                                 evaluation_mask,
                                                 num_supports,
@@ -332,12 +333,11 @@ class AGNNTrainer(object):
                                 query_label):
         """
         Compute total loss, query classification accuracy, and per-generation CE loss.
-        Loss = Cross-Entropy tại mỗi GNN layer — paper Eq. 13.
-        BCE edge loss (từ DPGN) đã được loại bỏ để khớp đúng với paper AGNN Triple Attention.
+        - Node CE Loss: tính trên L2 distance (node_similarities_l2) để ép Encoder học đặc trưng chuẩn.
+        - BCE Edge Loss: tính trên trọng số cạnh (point_similarities), bật/tắt bằng loss_indicator[0].
         """
 
-        # ── Dự đoán nhãn query từ edge weights tại mỗi generation ────────────
-        # score[query_i, class_c] = sum of edge weights từ query_i đến các support của class c
+        # ── Dự đoán nhãn query (để tính Accuracy) từ point_similarity ─────────
         query_node_pred_generations = [
             torch.bmm(
                 point_similarity[:, num_supports:, :num_supports],
@@ -346,26 +346,54 @@ class AGNNTrainer(object):
             for point_similarity in point_similarities
         ]
 
-        # ── Cross-Entropy loss tại mỗi generation — paper Eq. 13 ─────────────
+        # ── Dự đoán nhãn query (để tính Loss CE) từ node_similarity_l2 ────────
+        # Dùng L2 distance để truyền gradient rõ ràng về Encoder
+        query_node_pred_generations_l2 = [
+            torch.bmm(
+                node_similarity_l2[:, num_supports:, :num_supports],
+                one_hot_encode(self.train_opt['num_ways'], support_label.long(), self.arg.device)
+            )
+            for node_similarity_l2 in node_similarities_l2
+        ]
+
+        # ── Cross-Entropy loss dựa trên L2 Similarity ─────────────────────────
         query_node_ce_loss = []
-        for query_node_pred in query_node_pred_generations:
-            pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
+        for query_node_pred_l2 in query_node_pred_generations_l2:
+            pred_flat  = query_node_pred_l2.contiguous().view(-1, query_node_pred_l2.shape[-1])
             label_flat = query_label.long().contiguous().view(-1)
             query_node_ce_loss.append(self.pred_loss(pred_flat, label_flat).mean())
 
-        # ── Train accuracy ────────────────────────────────────────────────────
+        # ── Balanced BCE Loss (Edge) — bật/tắt bằng loss_indicator[0] ─────────
+        w_bce = self.train_opt['loss_indicator'][0]
+        w_ce  = self.train_opt['loss_indicator'][1]
+        query_edge_bce_loss = []
+        if w_bce > 0:
+            for point_similarity in point_similarities:
+                bce_raw = self.edge_loss(1.0 - point_similarity, 1.0 - all_label_in_edge)
+                pos = torch.sum(bce_raw * query_edge_mask * all_label_in_edge * evaluation_mask) \
+                      / (torch.sum(query_edge_mask * all_label_in_edge * evaluation_mask) + 1e-6)
+                neg = torch.sum(bce_raw * query_edge_mask * (1.0 - all_label_in_edge) * evaluation_mask) \
+                      / (torch.sum(query_edge_mask * (1.0 - all_label_in_edge) * evaluation_mask) + 1e-6)
+                query_edge_bce_loss.append(pos + neg)
+        else:
+            # BCE tắt: điền giá trị 0 để tổng loss không thay đổi
+            query_edge_bce_loss = [torch.tensor(0.0, device=self.arg.device)
+                                   for _ in point_similarities]
+
+        # ── Train accuracy (dựa trên point_similarity — để đánh giá GNN) ──────
         query_node_acc_generations = [
             torch.eq(torch.max(query_node_pred, -1)[1], query_label.long()).float().mean()
             for query_node_pred in query_node_pred_generations
         ]
 
-        # ── Multi-layer weighted sum — paper Eq. 13 ───────────────────────────
-        # Layer cuối: weight = 1.0; các layer trước: weight = generation_weight (< 1.0)
+        # ── Multi-layer weighted sum: Total = w_bce*BCE + w_ce*CE ─────────────
         total_loss = []
         num_loss = self.config['num_loss_generation']
-        for l in range(num_loss - 1):
-            total_loss += [query_node_ce_loss[l].view(-1) * self.config['generation_weight']]
-        total_loss += [query_node_ce_loss[-1].view(-1) * 1.0]
+        for l in range(num_loss):
+            gen_w = self.config['generation_weight'] if l < num_loss - 1 else 1.0
+            l_ce  = query_node_ce_loss[l] * w_ce
+            l_bce = query_edge_bce_loss[l] * w_bce
+            total_loss += [(l_ce + l_bce).view(-1) * gen_w]
         total_loss = torch.mean(torch.cat(total_loss, 0))
 
         return total_loss, query_node_acc_generations, query_node_ce_loss
@@ -375,6 +403,7 @@ class AGNNTrainer(object):
                                query_node_accs,
                                all_label_in_edge,
                                point_similarities,
+                               node_similarities_l2,
                                query_edge_mask,
                                evaluation_mask,
                                num_supports,
@@ -382,19 +411,27 @@ class AGNNTrainer(object):
                                query_label):
         """
         Compute query classification CE loss and accuracy during evaluation.
-        Dùng Cross-Entropy thay BCE edge loss để nhất quán với train loss (paper Eq. 13).
+        - CE loss tính trên L2 distance để nhất quán với train.
+        - Accuracy tính trên point_similarity (edge weights) để đánh giá GNN.
         """
-        # Lấy edge weights của generation cuối cùng
-        point_similarity = point_similarities[-1]
+        # Lấy output của generation cuối cùng
+        point_similarity   = point_similarities[-1]
+        node_similarity_l2 = node_similarities_l2[-1]
 
-        # Dự đoán nhãn query từ edge weights
+        # Dự đoán nhãn query (để tính Accuracy) từ edge weights
         query_node_pred = torch.bmm(
             point_similarity[:, num_supports:, :num_supports],
             one_hot_encode(self.eval_opt['num_ways'], support_label.long(), self.arg.device)
         )
 
-        # Cross-Entropy loss
-        pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
+        # Dự đoán nhãn query (để tính CE Loss) từ L2 distance
+        query_node_pred_l2 = torch.bmm(
+            node_similarity_l2[:, num_supports:, :num_supports],
+            one_hot_encode(self.eval_opt['num_ways'], support_label.long(), self.arg.device)
+        )
+
+        # Cross-Entropy loss dựa trên L2
+        pred_flat  = query_node_pred_l2.contiguous().view(-1, query_node_pred_l2.shape[-1])
         label_flat = query_label.long().contiguous().view(-1)
         query_ce_loss = self.pred_loss(pred_flat, label_flat).mean()
 
