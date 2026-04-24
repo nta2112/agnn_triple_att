@@ -63,7 +63,7 @@ def adjust_learning_rate(optimizers, lr, iteration, dec_lr_step, lr_adj_base):
     """
     adjust learning rate after some iterations
     :param optimizers: the optimizers
-    :param lr: learning rate
+    :param lr: default learning rate (unused if initial_lr is present in param_groups)
     :param iteration: current iteration
     :param dec_lr_step: decrease learning rate in how many steps.
                         Can be an int (periodic decay) or a list of milestone steps
@@ -74,13 +74,18 @@ def adjust_learning_rate(optimizers, lr, iteration, dec_lr_step, lr_adj_base):
     if isinstance(dec_lr_step, list):
         # Multi-step milestone decay: count how many milestones have been passed
         num_decays = sum(1 for m in dec_lr_step if iteration >= m)
-        new_lr = lr * (lr_adj_base ** num_decays)
     else:
         # Periodic decay: decay every dec_lr_step iterations
-        new_lr = lr * (lr_adj_base ** (int(iteration / dec_lr_step)))
+        num_decays = int(iteration / dec_lr_step)
+
+    decay_factor = lr_adj_base ** num_decays
+
     for optimizer in optimizers:
         for param_group in optimizer.param_groups:
-            param_group['lr'] = new_lr
+            if 'initial_lr' in param_group:
+                param_group['lr'] = param_group['initial_lr'] * decay_factor
+            else:
+                param_group['lr'] = lr * decay_factor
 
 
 def label2edge(label, device):
