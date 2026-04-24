@@ -56,10 +56,14 @@ class AGNNTrainer(object):
         self.module_params = list(self.enc_module.parameters()) + list(self.gnn_module.parameters())
 
         # set optimizer
-        self.optimizer = optim.Adam(
-            params=self.module_params,
-            lr=self.train_opt['lr'],
-            weight_decay=self.train_opt['weight_decay'])
+        # Use separate learning rates if provided, fallback to default 'lr' or safe default
+        lr_enc = self.train_opt.get('lr_enc', self.train_opt.get('lr', 1e-4))
+        lr_gnn = self.train_opt.get('lr_gnn', self.train_opt.get('lr', 1e-4))
+
+        self.optimizer = optim.Adam([
+            {'params': self.enc_module.parameters(), 'lr': lr_enc, 'initial_lr': lr_enc},
+            {'params': self.gnn_module.parameters(), 'lr': lr_gnn, 'initial_lr': lr_gnn}
+        ], weight_decay=self.train_opt['weight_decay'])
 
         # set loss
         self.edge_loss = nn.BCELoss(reduction='none')
