@@ -446,6 +446,11 @@ def main():
     parser.add_argument('--mode', type=str, default='train',
                         help='train or eval')
 
+    parser.add_argument('--pretrain_path', type=str, default='',
+                        help='(optional) Đường dẫn đến file backbone_best.pth được tạo bởi pretrain.py. '
+                             'Nếu chỉ định và chưa có AGNN checkpoint, backbone sẽ được khởi tạo '
+                             'bằng các trọng số đã pretrain.')
+
     parser.add_argument('--tag', type=str, default='debug',
                         help='description')
 
@@ -581,6 +586,10 @@ def main():
         gnn_module = nn.DataParallel(gnn_module, device_ids=range(args_opt.num_gpu), dim=0)
         print('done!\n')
 
+    agnn_ckpt_path = os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar')
+    agnn_ckpt_exists = os.path.exists(args_opt.checkpoint_dir) and \
+                       os.path.exists(agnn_ckpt_path)
+
     if not os.path.exists(args_opt.checkpoint_dir):
         os.makedirs(args_opt.checkpoint_dir)
         logger.info('no checkpoint for model: {}, make a new one at {}'.format(
@@ -588,20 +597,57 @@ def main():
             args_opt.checkpoint_dir))
         best_step = 0
     else:
-        if not os.path.exists(os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar')):
+        if not agnn_ckpt_exists:
             best_step = 0
         else:
             logger.info('find a checkpoint, loading checkpoint from {}'.format(
                 args_opt.checkpoint_dir))
-            best_checkpoint = torch.load(os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar'), 
-                                         map_location=args_opt.device, 
+            best_checkpoint = torch.load(agnn_ckpt_path,
+                                         map_location=args_opt.device,
                                          weights_only=False)
- 
+
             logger.info('best model pack loaded')
             best_step = best_checkpoint['iteration']
             enc_module.load_state_dict(best_checkpoint['enc_module_state_dict'])
             gnn_module.load_state_dict(best_checkpoint['gnn_module_state_dict'])
-            logger.info('current best test accuracy is: {}, at step: {}'.format(best_checkpoint['test_acc'], best_step))
+            logger.info('current best test accuracy is: {}, at step: {}'.format(
+                best_checkpoint['test_acc'], best_step))
+
+    # ── Load pretrained backbone (chỉ khi chưa có AGNN checkpoint) ─────────────
+    # Nếu đã có AGNN checkpoint thì bỏ qua pretrain_path vì AGNN checkpoint
+    # đã bao gồm backbone weights đã được fine-tune.
+    if args_opt.pretrain_path and not agnn_ckpt_exists:
+        pretrain_path = args_opt.pretrain_path
+        if not os.path.exists(pretrain_path):
+            logger.error(f'pretrain_path không tồn tại: {pretrain_path}')
+            exit()
+
+        logger.info(f'Loading pretrained backbone từ: {pretrain_path}')
+        ckpt = torch.load(pretrain_path,
+                          map_location=args_opt.device,
+                          weights_only=False)
+
+        # Kiểm tra emb_size tương thích
+        ckpt_emb = ckpt.get('emb_size', None)
+        if ckpt_emb is not None and ckpt_emb != config['emb_size']:
+            logger.error(
+                f'emb_size không khớp: checkpoint={ckpt_emb}, '
+                f'config={config["emb_size"]}. '
+                f'Hãy đảm bảo pretrain và AGNN dùng cùng emb_size.')
+            exit()
+
+        backbone_state = ckpt['backbone_state_dict']
+
+        # Strict=True — keys phải khớp hoàn toàn với ResNet12
+        enc_module.load_state_dict(backbone_state, strict=True)
+        logger.info(
+            f'✓ Pretrained backbone loaded thành công (strict=True, '
+            f'{len(backbone_state)} keys). '
+            f'Checkpoint val_acc={ckpt.get("val_acc", "N/A")}')
+    elif args_opt.pretrain_path and agnn_ckpt_exists:
+        logger.info(
+            'pretrain_path được chỉ định nhưng đã có AGNN checkpoint '
+            '→ bỏ qua pretrain_path, dùng AGNN checkpoint.')
 
     if config['dataset_name'] == 'custom':
         img_size = config.get('image_size', 84)
