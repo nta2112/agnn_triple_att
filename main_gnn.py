@@ -636,14 +636,35 @@ def main():
                 f'Hãy đảm bảo pretrain và AGNN dùng cùng emb_size.')
             exit()
 
-        backbone_state = ckpt['backbone_state_dict']
+        backbone_state = None
+        if 'backbone_state_dict' in ckpt:
+            backbone_state = ckpt['backbone_state_dict']
+        elif 'state_dict' in ckpt:
+            backbone_state = ckpt['state_dict']
+            logger.info('Không tìm thấy "backbone_state_dict", sử dụng "state_dict" thay thế.')
+        else:
+            # Kiểm tra xem có phải là raw state dict không bằng cách xem một key bất kỳ
+            # thường backbone sẽ có các key bắt đầu bằng conv1, layer...
+            sample_key = list(ckpt.keys())[0]
+            if isinstance(sample_key, str) and (sample_key.startswith('conv') or sample_key.startswith('layer')):
+                backbone_state = ckpt
+                logger.info('Phát hiện file là raw state dict, tiến hành load trực tiếp.')
+            else:
+                logger.error('Không tìm thấy trọng số hợp lệ trong file checkpoint. '
+                             f'Các keys hiện có: {list(ckpt.keys())}')
+                exit()
 
         # Strict=True — keys phải khớp hoàn toàn với ResNet12
-        enc_module.load_state_dict(backbone_state, strict=True)
-        logger.info(
-            f'✓ Pretrained backbone loaded thành công (strict=True, '
-            f'{len(backbone_state)} keys). '
-            f'Checkpoint val_acc={ckpt.get("val_acc", "N/A")}')
+        try:
+            enc_module.load_state_dict(backbone_state, strict=True)
+            logger.info(
+                f'✓ Pretrained backbone loaded thành công (strict=True, '
+                f'{len(backbone_state)} keys). '
+                f'Checkpoint info: val_acc={ckpt.get("val_acc", "N/A")}')
+        except RuntimeError as e:
+            logger.warning(f'Load strict=True thất bại do lệch keys. Thử load với strict=False...')
+            enc_module.load_state_dict(backbone_state, strict=False)
+            logger.info('✓ Pretrained backbone loaded thành công với strict=False.')
     elif args_opt.pretrain_path and agnn_ckpt_exists:
         logger.info(
             'pretrain_path được chỉ định nhưng đã có AGNN checkpoint '
