@@ -639,6 +639,9 @@ def main():
         backbone_state = None
         if 'backbone_state_dict' in ckpt:
             backbone_state = ckpt['backbone_state_dict']
+        elif 'model_sd' in ckpt:
+            backbone_state = ckpt['model_sd']
+            logger.info('Không tìm thấy "backbone_state_dict", sử dụng "model_sd" thay thế.')
         elif 'state_dict' in ckpt:
             backbone_state = ckpt['state_dict']
             logger.info('Không tìm thấy "backbone_state_dict", sử dụng "state_dict" thay thế.')
