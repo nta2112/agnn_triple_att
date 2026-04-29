@@ -183,15 +183,20 @@ class BackboneClassifier(nn.Module):
         super().__init__()
         # ResNet12 hoàn chỉnh — giống hệt đối tượng được khởi tạo trong main_gnn.py
         self.backbone   = ResNet12(emb_size=emb_size, cifar_flag=cifar_flag)
-        # Classifier head — NGOÀI backbone, không ảnh hưởng đến backbone.state_dict()
-        self.classifier = nn.Linear(emb_size, num_classes)
+        
+        # Classifier heads cho cả 2 nhánh (Layer Last và Layer Second)
+        # Việc train cả 2 nhánh giúp backbone học được cả đặc trưng ngữ nghĩa và cấu trúc
+        self.classifier_last   = nn.Linear(emb_size, num_classes)
+        self.classifier_second = nn.Linear(emb_size, num_classes)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple:
         # backbone trả về [layer_last_feat, layer_second_feat]
-        # Dùng layer_last_feat (output[0]) để phân loại
-        feat   = self.backbone(x)[0]        # [B, emb_size]
-        logits = self.classifier(feat)      # [B, num_classes]
-        return logits
+        feats = self.backbone(x)
+        
+        logits_last   = self.classifier_last(feats[0])
+        logits_second = self.classifier_second(feats[1])
+        
+        return logits_last, logits_second
 
     def get_backbone_state_dict(self) -> dict:
         """
@@ -240,13 +245,19 @@ class PretrainTrainer:
             labels = labels.to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad()
-            logits = self.model(imgs)
-            loss   = self.criterion(logits, labels)
+            logits_last, logits_second = self.model(imgs)
+            
+            # Tính loss trên cả 2 nhánh
+            loss_last   = self.criterion(logits_last, labels)
+            loss_second = self.criterion(logits_second, labels)
+            loss        = loss_last + loss_second
+            
             loss.backward()
             self.optimizer.step()
 
             total_loss += loss.item() * imgs.size(0)
-            correct    += (logits.argmax(1) == labels).sum().item()
+            # Dùng nhánh chính (last) để tính accuracy báo cáo
+            correct    += (logits_last.argmax(1) == labels).sum().item()
             total      += imgs.size(0)
 
         return total_loss / total, correct / total
@@ -262,11 +273,13 @@ class PretrainTrainer:
             imgs   = imgs.to(self.device, non_blocking=True)
             labels = labels.to(self.device, non_blocking=True)
 
-            logits = self.model(imgs)
-            loss   = self.criterion(logits, labels)
+            logits_last, logits_second = self.model(imgs)
+            loss_last   = self.criterion(logits_last, labels)
+            loss_second = self.criterion(logits_second, labels)
+            loss        = loss_last + loss_second
 
             total_loss += loss.item() * imgs.size(0)
-            correct    += (logits.argmax(1) == labels).sum().item()
+            correct    += (logits_last.argmax(1) == labels).sum().item()
             total      += imgs.size(0)
 
         return total_loss / total, correct / total
@@ -458,7 +471,7 @@ def main():
         cifar_flag=cifar_flag)
 
     log.info(f'Model: ResNet12(emb_size={args.emb_size}, cifar_flag={cifar_flag}) '
-             f'+ Linear({args.emb_size} → {num_classes})')
+             f'+ Dual Classifier Heads({args.emb_size} → {num_classes})')
 
     # ── Optimizer & Scheduler ─────────────────────────────────────────────────
     optimizer = optim.SGD(
