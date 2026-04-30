@@ -295,7 +295,7 @@ class CustomImageFolder(data.Dataset):
             print("Found split file {}, using predefined classes.".format(split_path_to_use))
             with open(split_path_to_use, 'r') as f:
                 splits = json.load(f)
-            class_names = sorted(splits.get(partition, []))
+            class_names = sorted([c.strip() for c in splits.get(partition, [])])
             base_dir = self.root
         else:
             # Fallback to standard ImageFolder mode (root/train/class_names)
