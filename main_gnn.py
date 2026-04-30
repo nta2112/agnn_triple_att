@@ -478,16 +478,21 @@ def main():
     save_root = config.get('save_root', None)
     
     if save_root:
-        # Unified structure: {save_root}/{exp_name}/logs and {save_root}/{exp_name}/checkpoints
-        args_opt.log_dir = os.path.join(save_root, args_opt.exp_name, 'logs')
-        args_opt.checkpoint_dir = os.path.join(save_root, args_opt.exp_name, 'checkpoints')
-        log_path = args_opt.log_dir # logs are stored directly in this dir
+        # Chỉ ghi đè nếu người dùng dùng giá trị mặc định của argparse (không truyền từ command line)
+        if args_opt.log_dir == os.path.join('.', 'logs'):
+            args_opt.log_dir = os.path.join(save_root, args_opt.exp_name, 'logs')
+        
+        if args_opt.checkpoint_dir == os.path.join('.', 'checkpoints'):
+            args_opt.checkpoint_dir = os.path.join(save_root, args_opt.exp_name, 'checkpoints')
+            
+        log_path = args_opt.log_dir
     else:
         # Fallback to original behavior or config-overridden dirs
         args_opt.log_dir = config.get('log_dir', args_opt.log_dir)
         args_opt.checkpoint_dir = config.get('checkpoint_dir', args_opt.checkpoint_dir)
         log_path = os.path.join(args_opt.log_dir, args_opt.exp_name)
-        args_opt.checkpoint_dir = os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)
+        if args_opt.checkpoint_dir == os.path.join('.', 'checkpoints'):
+             args_opt.checkpoint_dir = os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)
 
     # Always override log steps from config if present, regardless of save_root
     args_opt.log_step = config.get('log_step', args_opt.log_step)
@@ -586,20 +591,19 @@ def main():
         gnn_module = nn.DataParallel(gnn_module, device_ids=range(args_opt.num_gpu), dim=0)
         print('done!\n')
 
-    agnn_ckpt_path = os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar')
-    agnn_ckpt_exists = os.path.exists(args_opt.checkpoint_dir) and \
-                       os.path.exists(agnn_ckpt_path)
-
-    if not os.path.exists(args_opt.checkpoint_dir):
-        os.makedirs(args_opt.checkpoint_dir)
-        logger.info('no checkpoint for model: {}, make a new one at {}'.format(
-            args_opt.exp_name,
-            args_opt.checkpoint_dir))
-        best_step = 0
+    # Kiểm tra xem checkpoint_dir là thư mục hay là file trực tiếp
+    if os.path.isfile(args_opt.checkpoint_dir):
+        agnn_ckpt_path = args_opt.checkpoint_dir
+        agnn_ckpt_exists = True
     else:
-        if not agnn_ckpt_exists:
-            best_step = 0
-        else:
+        agnn_ckpt_path = os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar')
+        agnn_ckpt_exists = os.path.exists(args_opt.checkpoint_dir) and \
+                           os.path.exists(agnn_ckpt_path)
+
+    if not agnn_ckpt_exists:
+        best_step = 0
+        logger.info('no checkpoint found at: {}, starting from step 0'.format(args_opt.checkpoint_dir))
+    else:
             logger.info('find a checkpoint, loading checkpoint from {}'.format(
                 args_opt.checkpoint_dir))
             best_checkpoint = torch.load(agnn_ckpt_path,
