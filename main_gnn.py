@@ -407,6 +407,19 @@ class AGNNTrainer(object):
         return query_node_accs, query_ce_losses
 
 
+def clean_state_dict(state_dict):
+    """
+    Loại bỏ tiền tố 'module.' từ state_dict nếu mô hình được lưu từ DataParallel
+    nhưng đang được nạp vào mô hình Single-GPU (hoặc ngược lại).
+    """
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        # Nếu khóa bắt đầu bằng 'module.' thì lấy phần sau
+        name = k[7:] if k.startswith('module.') else k
+        new_state_dict[name] = v
+    return new_state_dict
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -612,8 +625,14 @@ def main():
 
             logger.info('best model pack loaded')
             best_step = best_checkpoint['iteration']
-            enc_module.load_state_dict(best_checkpoint['enc_module_state_dict'])
-            gnn_module.load_state_dict(best_checkpoint['gnn_module_state_dict'])
+            
+            # Làm sạch state_dict trước khi nạp
+            enc_sd = clean_state_dict(best_checkpoint['enc_module_state_dict'])
+            gnn_sd = clean_state_dict(best_checkpoint['gnn_module_state_dict'])
+            
+            enc_module.load_state_dict(enc_sd)
+            gnn_module.load_state_dict(gnn_sd)
+            
             logger.info('current best test accuracy is: {}, at step: {}'.format(
                 best_checkpoint['test_acc'], best_step))
 
