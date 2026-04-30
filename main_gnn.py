@@ -407,17 +407,23 @@ class AGNNTrainer(object):
         return query_node_accs, query_ce_losses
 
 
-def clean_state_dict(state_dict):
+def load_flexible(model, state_dict):
     """
-    Loại bỏ tiền tố 'module.' từ state_dict nếu mô hình được lưu từ DataParallel
-    nhưng đang được nạp vào mô hình Single-GPU (hoặc ngược lại).
+    Nạp state_dict vào model một cách linh hoạt, bất kể model có dùng DataParallel hay không
+    và checkpoint có tiền tố 'module.' hay không.
     """
-    new_state_dict = {}
+    # 1. Làm sạch state_dict: xóa 'module.' nếu có
+    clean_sd = {}
     for k, v in state_dict.items():
-        # Nếu khóa bắt đầu bằng 'module.' thì lấy phần sau
         name = k[7:] if k.startswith('module.') else k
-        new_state_dict[name] = v
-    return new_state_dict
+        clean_sd[name] = v
+    
+    # 2. Nạp vào model
+    # Nếu model hiện tại là DataParallel, nạp vào model.module
+    if isinstance(model, torch.nn.DataParallel):
+        model.module.load_state_dict(clean_sd)
+    else:
+        model.load_state_dict(clean_sd)
 
 
 def main():
@@ -627,12 +633,9 @@ def main():
             logger.info('best model pack loaded')
             best_step = best_checkpoint['iteration']
             
-            # Làm sạch state_dict trước khi nạp
-            enc_sd = clean_state_dict(best_checkpoint['enc_module_state_dict'])
-            gnn_sd = clean_state_dict(best_checkpoint['gnn_module_state_dict'])
-            
-            enc_module.load_state_dict(enc_sd)
-            gnn_module.load_state_dict(gnn_sd)
+            # Nạp trọng số linh hoạt cho cả Encoder và GNN
+            load_flexible(enc_module, best_checkpoint['enc_module_state_dict'])
+            load_flexible(gnn_module, best_checkpoint['gnn_module_state_dict'])
             
             logger.info('current best test accuracy is: {}, at step: {}'.format(
                 best_checkpoint['test_acc'], best_step))
