@@ -701,17 +701,25 @@ def main():
         split_path = config.get('split_path', None)
         dataset_train = dataset(root=args_opt.dataset_root, partition='train', image_size=img_size, split_path=split_path)
         dataset_valid = dataset(root=args_opt.dataset_root, partition='val', image_size=img_size, split_path=split_path)
-        dataset_test  = dataset(root=args_opt.dataset_root, partition='test', image_size=img_size, split_path=split_path)
+        
+        # Chỉ load tập test nếu ở chế độ eval
+        dataset_test = None
+        if args_opt.mode == 'eval':
+            dataset_test = dataset(root=args_opt.dataset_root, partition='test', image_size=img_size, split_path=split_path)
     else:
         dataset_train = dataset(root=args_opt.dataset_root, partition='train')
         dataset_valid = dataset(root=args_opt.dataset_root, partition='val')
-        dataset_test  = dataset(root=args_opt.dataset_root, partition='test')
+        
+        dataset_test = None
+        if args_opt.mode == 'eval':
+            dataset_test = dataset(root=args_opt.dataset_root, partition='test')
 
     # ── Pre-load ảnh vào RAM để tối ưu tốc độ DataLoader ────────────────────
     if hasattr(dataset_train, 'cache_to_memory'):
         dataset_train.cache_to_memory()
         dataset_valid.cache_to_memory()
-        dataset_test.cache_to_memory()
+        if dataset_test is not None:
+            dataset_test.cache_to_memory()
 
     train_loader = DataLoader(dataset_train,
                               num_tasks=train_opt['batch_size'],
@@ -727,13 +735,16 @@ def main():
                               num_queries=eval_opt['num_queries'],
                               epoch_size=eval_opt['iteration'],
                               num_workers=args_opt.num_workers)
-    test_loader  = DataLoader(dataset_test,
-                              num_tasks=eval_opt['batch_size'],
-                              num_ways=eval_opt['num_ways'],
-                              num_shots=eval_opt['num_shots'],
-                              num_queries=eval_opt['num_queries'],
-                              epoch_size=eval_opt['iteration'],
-                              num_workers=args_opt.num_workers)
+    
+    test_loader = None
+    if dataset_test is not None:
+        test_loader  = DataLoader(dataset_test,
+                                  num_tasks=eval_opt['batch_size'],
+                                  num_ways=eval_opt['num_ways'],
+                                  num_shots=eval_opt['num_shots'],
+                                  num_queries=eval_opt['num_queries'],
+                                  epoch_size=eval_opt['iteration'],
+                                  num_workers=args_opt.num_workers)
 
     data_loader = {'train': train_loader,
                    'val': valid_loader,
