@@ -50,9 +50,12 @@ def save_checkpoint(state, is_best, exp_name):
     save the checkpoint during training stage
     :param state: content to be saved
     :param is_best: if DPGN model's performance is the best at current step
-    :param exp_name: experiment name
+    :param exp_name: experiment name (or checkpoint directory path)
     :return: None
     """
+    if not os.path.exists(exp_name):
+        os.makedirs(exp_name)
+        
     torch.save(state, os.path.join('{}'.format(exp_name), 'checkpoint.pth.tar'))
     if is_best:
         shutil.copyfile(os.path.join('{}'.format(exp_name), 'checkpoint.pth.tar'),
