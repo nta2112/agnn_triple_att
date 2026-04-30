@@ -321,7 +321,7 @@ class MultiHeadAttention2(nn.Module):
         return output
     
 class AGNN(nn.Module):
-    def __init__(self, num_generations, dropout, num_support_sample, num_sample, loss_indicator, point_metric,
+    def __init__(self, in_c, num_generations, dropout, num_support_sample, num_sample, loss_indicator, point_metric,
                  ablation_mode='full'):
         """
         AGNN model
@@ -350,15 +350,15 @@ class AGNN(nn.Module):
             self.ablation_flags = set(ablation_mode.split('|'))
 
         self.fusion = nn.Conv2d(2, 1, kernel_size=(1,1), stride=(1,1))
-        self.slf_attn = MultiHeadAttention(1, 128, 128, dropout=0.5)
+        self.slf_attn = MultiHeadAttention(1, in_c, in_c, dropout=0.5)
 
-        P_Sim = PointSimilarity_Pre(128, 128, dropout=self.dropout)
+        P_Sim = PointSimilarity_Pre(in_c, in_c, dropout=self.dropout)
         add_dim = 32
         use_neigh_att = 'no_neigh_att' not in self.ablation_flags
         use_mem_att   = 'no_mem_att'   not in self.ablation_flags
 
         self.add_module('initial_edge', P_Sim)
-        current_dim = 128 + 5  # initial node dim after label concat
+        current_dim = in_c + 5  # initial node dim after label concat
         for l in range(self.generation):
             D2P = D2PAgg(current_dim * 2, add_dim,
                          dropout=self.dropout if l < self.generation - 1 else 0.0)

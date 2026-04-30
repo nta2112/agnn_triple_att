@@ -581,13 +581,14 @@ def main():
 
     ablation_mode = config.get('ablation_mode', 'full')
     logger.info('Ablation mode: {}'.format(ablation_mode))
-    gnn_module = AGNN(config['num_generation'],
-                      train_opt['dropout'],
-                      train_opt['num_ways'] * train_opt['num_shots'],
-                      train_opt['num_ways'] * train_opt['num_shots'] + train_opt['num_ways'] * train_opt['num_queries'],
-                      train_opt['loss_indicator'],
-                      config['point_distance_metric'],
-                      ablation_mode=ablation_mode)
+    gnn_module = AGNN(in_c=config['emb_size'],
+                      num_generations=config['num_generation'],
+                      dropout=train_opt['dropout'],
+                      num_support_sample=train_opt['num_ways'] * train_opt['num_shots'],
+                      num_sample=train_opt['num_ways'] * (train_opt['num_shots'] + train_opt['num_queries']),
+                      loss_indicator=train_opt['loss_indicator'],
+                      point_metric=config['point_distance_metric'],
+                      ablation_mode=config.get('ablation_mode', 'full'))
 
 
     # num_params = 0
