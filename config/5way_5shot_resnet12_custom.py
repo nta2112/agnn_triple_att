@@ -18,6 +18,8 @@ config['distribution_distance_metric'] = 'l1'
 
 config['emb_size'] = 128
 config['backbone'] = 'resnet12'
+config['loss_margin'] = 0.1
+config['logit_scale'] = 10.0
 
 train_opt = OrderedDict()
 train_opt['num_ways'] = 5

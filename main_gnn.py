@@ -69,6 +69,10 @@ class AGNNTrainer(object):
         self.edge_loss = nn.BCELoss(reduction='none')
         self.pred_loss = nn.CrossEntropyLoss(reduction='none')
 
+        # set margin and scale for loss
+        self.loss_margin = config.get('loss_margin', 0.0)
+        self.logit_scale = config.get('logit_scale', 1.0)
+
         # initialize other global variables
         self.global_step = best_step
         self.best_step = best_step
@@ -346,10 +350,20 @@ class AGNNTrainer(object):
             for point_similarity in point_similarities
         ]
 
-        # ── Cross-Entropy loss tại mỗi generation — paper Eq. 13 ─────────────
+        # ── Cross-Entropy loss với Margin tại mỗi generation ──────────────────
         query_node_ce_loss = []
         for query_node_pred in query_node_pred_generations:
-            pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
+            
+            # Apply additive margin to ground truth class BEFORE scaling
+            if self.loss_margin > 0:
+                # Create mask for ground truth class
+                gt_mask = torch.zeros_like(query_node_pred).scatter_(2, query_label.long().unsqueeze(2), 1.0)
+                # Subtract margin from correct class to make it harder (forcing higher score)
+                logits = (query_node_pred - (gt_mask * self.loss_margin)) * self.logit_scale
+            else:
+                logits = query_node_pred * self.logit_scale
+
+            pred_flat  = logits.contiguous().view(-1, logits.shape[-1])
             label_flat = query_label.long().contiguous().view(-1)
             query_node_ce_loss.append(self.pred_loss(pred_flat, label_flat).mean())
 
@@ -393,8 +407,10 @@ class AGNNTrainer(object):
             one_hot_encode(self.eval_opt['num_ways'], support_label.long(), self.arg.device)
         )
 
-        # Cross-Entropy loss
-        pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
+        # Cross-Entropy loss (Không dùng margin khi eval để phản ánh đúng thực tế)
+        # Nhưng vẫn dùng logit_scale để loss value khớp với training
+        logits = query_node_pred * self.logit_scale
+        pred_flat  = logits.contiguous().view(-1, logits.shape[-1])
         label_flat = query_label.long().contiguous().view(-1)
         query_ce_loss = self.pred_loss(pred_flat, label_flat).mean()
 

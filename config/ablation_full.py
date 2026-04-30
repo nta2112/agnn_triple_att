@@ -41,6 +41,8 @@ config['distribution_distance_metric'] = 'l1'
 # ── Embedding ───────────────────────────────────────────────
 config['emb_size'] = 128
 config['backbone'] = 'resnet50'         # ResNet50 Pretrained ImageNet
+config['loss_margin'] = 0.1
+config['logit_scale'] = 10.0
 
 # ── Lưu trữ ─────────────────────────────────────────────────
 config['save_root'] = '/content/drive/MyDrive/Do_an_Data'
