@@ -195,7 +195,7 @@ class ResNet50Pretrained(nn.Module):
         super(ResNet50Pretrained, self).__init__()
         import torchvision.models as models
         # Load the pretrained ResNet50
-        resnet = models.resnet50(weights='DEFAULT')
+        resnet = models.resnet50(weights=None)
         # Stem and layer1, 2
         self.features_stem = nn.Sequential(
             resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool,
