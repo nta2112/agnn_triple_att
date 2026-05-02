@@ -25,26 +25,27 @@ config['log_step'] = 100 # In thông tin huấn luyện sau mỗi 100 steps
 train_opt = OrderedDict()
 train_opt['num_ways'] = 5
 train_opt['num_shots'] = 5
-train_opt['num_queries'] = 5 # 15 Queries 
-train_opt['batch_size'] = 2 
-train_opt['iteration'] = 2000
+train_opt['num_queries'] = 5 
+train_opt['batch_size'] = 4 
+train_opt['iteration'] = 10000
 train_opt['lr'] = 0.00002
-train_opt['weight_decay'] = 1e-4
-train_opt['dec_lr'] = 1000
+train_opt['weight_decay'] = 1e-3
+train_opt['dec_lr'] = [4000, 7000]
 train_opt['lr_adj_base'] = 0.5
-train_opt['dropout'] = 0.2
+train_opt['dropout'] = 0.3
+train_opt['label_smoothing'] = 0.1
 train_opt['loss_indicator'] = [1, 1, 0]
 
 eval_opt = OrderedDict()
 eval_opt['num_ways'] = 5
 eval_opt['num_shots'] = 5
-eval_opt['num_queries'] = 15 # 15 Queries
-eval_opt['batch_size'] = 2 # Hạ xuống 1 để tránh tràn RAM
-eval_opt['iteration'] = 50
-eval_opt['interval'] = 100 # Test mô hình sau mỗi 100 steps
+eval_opt['num_queries'] = 15 
+eval_opt['batch_size'] = 2 
+eval_opt['iteration'] = 600
+eval_opt['interval'] = 200 
 
 config['train_config'] = train_opt
-config['eval_config'] = eval_opt
+config['eval_config']  = eval_opt
 
 
 

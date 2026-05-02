@@ -67,7 +67,8 @@ class AGNNTrainer(object):
 
         # set loss
         self.edge_loss = nn.BCELoss(reduction='none')
-        self.pred_loss = nn.CrossEntropyLoss(reduction='none')
+        label_smoothing = self.train_opt.get('label_smoothing', 0.0)
+        self.pred_loss = nn.CrossEntropyLoss(reduction='none', label_smoothing=label_smoothing)
 
         # set margin and scale for loss
         self.loss_margin = config.get('loss_margin', 0.0)

@@ -256,7 +256,7 @@ class CustomImageFolder(data.Dataset):
             self.resize_transform = transforms.Resize(box_size)
             # Phần augmentation (dùng khi lấy ảnh): crop + augment + tensor
             self.aug_transform = transforms.Compose([
-                transforms.RandomCrop(image_size, padding=4),
+                transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0)),
                 transforms.RandomHorizontalFlip(),
                 transforms.ColorJitter(brightness=.1, contrast=.1, saturation=.1, hue=.1),
                 transforms.ToTensor(),
