@@ -245,7 +245,7 @@ class ResNet50Pretrained(nn.Module):
 
 
 import torch.nn.functional as F
-from temp_last_vit.last_vit_model import build_last_vit_b16
+# from temp_last_vit.last_vit_model import build_last_vit_b16
 
 class LaStViTBackbone(nn.Module):
     """
