@@ -53,18 +53,26 @@ def sample_episode(dataset, num_ways, num_shots, num_known_q,
     all_cls = dataset.full_class_list
     l2i = dataset.label2ind
 
-    if len(all_cls) < num_ways + num_unknown_ways:
+    # Adaptive class selection
+    actual_unknown_ways = min(num_unknown_ways, len(all_cls) - num_ways)
+    
+    if actual_unknown_ways <= 0:
         raise ValueError(
-            f"Dataset only has {len(all_cls)} classes; need {num_ways}+{num_unknown_ways}.")
+            f"Dataset only has {len(all_cls)} classes; need at least {num_ways + 1} "
+            f"for Open World evaluation.")
 
-    chosen = random.sample(all_cls, num_ways + num_unknown_ways)
+    if actual_unknown_ways < num_unknown_ways:
+        print(f"  [Warning] Dataset has only {len(all_cls)} classes. "
+              f"Adjusting Unknown ways to {actual_unknown_ways}.")
+
+    chosen = random.sample(all_cls, num_ways + actual_unknown_ways)
     known_cls   = chosen[:num_ways]
     unknown_cls = chosen[num_ways:]
 
     C, H, W = dataset.data_size
     n_sup   = num_ways * num_shots
     n_knq   = num_ways * num_known_q
-    n_unq   = num_unknown_ways * num_unknown_q
+    n_unq   = actual_unknown_ways * num_unknown_q
     n_q     = n_knq + n_unq
 
     sup_data  = torch.empty(1, n_sup, C, H, W)

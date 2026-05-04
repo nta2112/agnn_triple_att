@@ -364,11 +364,17 @@ class AGNNTrainer(object):
         all_cls = dataset.full_class_list
         l2i     = dataset.label2ind
 
-        if len(all_cls) < num_ways + num_unknown_ways:
+        # Tự động điều chỉnh số lớp Unknown nếu dữ liệu quá ít (Adaptive)
+        actual_unknown_ways = min(num_unknown_ways, len(all_cls) - num_ways)
+        
+        if actual_unknown_ways <= 0:
             self.log.warning(
                 f'eval_hm: not enough classes ({len(all_cls)}) for '
-                f'{num_ways}+{num_unknown_ways}, returning HM=0')
+                f'{num_ways} ways. Need at least {num_ways + 1} for Open World. Returning HM=0')
             return 0.0, 0.0, 0.0
+        
+        if actual_unknown_ways < num_unknown_ways:
+            self.log.info(f'eval_hm: data has only {len(all_cls)} classes. Using {actual_unknown_ways} as Unknown.')
 
         self.enc_module.eval()
         self.gnn_module.eval()
@@ -384,13 +390,13 @@ class AGNNTrainer(object):
 
         with torch.no_grad():
             for _ in range(num_episodes):
-                chosen = _random.sample(all_cls, num_ways + num_unknown_ways)
+                chosen = _random.sample(all_cls, num_ways + actual_unknown_ways)
                 known_cls   = chosen[:num_ways]
                 unknown_cls = chosen[num_ways:]
 
                 n_sup = num_ways * num_shots
                 n_kq  = num_ways * num_kq
-                n_uq  = num_unknown_ways * num_unknown_queries
+                n_uq  = actual_unknown_ways * num_unknown_queries
                 n_q   = n_kq + n_uq
                 n_all = n_sup + n_q
 
