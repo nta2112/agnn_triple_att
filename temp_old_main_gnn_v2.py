@@ -31,8 +31,6 @@ class AGNNTrainer(object):
         :param config: model configurations
         :param best_step: starting step (step at best eval acc or 0 if starts from scratch)
         """
-        # best_hm: Harmonic Mean (S, U) dùng để chọn checkpoint tốt nhất (Paper Source 6)
-        self.best_hm = 0.0
 
         self.arg = arg
         self.config = config
@@ -58,23 +56,14 @@ class AGNNTrainer(object):
         self.module_params = list(self.enc_module.parameters()) + list(self.gnn_module.parameters())
 
         # set optimizer
-        # Use separate learning rates if provided, fallback to default 'lr' or safe default
-        lr_enc = self.train_opt.get('lr_enc', self.train_opt.get('lr', 1e-4))
-        lr_gnn = self.train_opt.get('lr_gnn', self.train_opt.get('lr', 1e-4))
-
-        self.optimizer = optim.Adam([
-            {'params': self.enc_module.parameters(), 'lr': lr_enc, 'initial_lr': lr_enc},
-            {'params': self.gnn_module.parameters(), 'lr': lr_gnn, 'initial_lr': lr_gnn}
-        ], weight_decay=self.train_opt['weight_decay'])
+        self.optimizer = optim.Adam(
+            params=self.module_params,
+            lr=self.train_opt['lr'],
+            weight_decay=self.train_opt['weight_decay'])
 
         # set loss
         self.edge_loss = nn.BCELoss(reduction='none')
-        label_smoothing = self.train_opt.get('label_smoothing', 0.0)
-        self.pred_loss = nn.CrossEntropyLoss(reduction='none', label_smoothing=label_smoothing)
-
-        # set margin and scale for loss
-        self.loss_margin = config.get('loss_margin', 0.0)
-        self.logit_scale = config.get('logit_scale', 1.0)
+        self.pred_loss = nn.CrossEntropyLoss(reduction='none')
 
         # initialize other global variables
         self.global_step = best_step
@@ -143,57 +132,31 @@ class AGNNTrainer(object):
 
             # adjust learning rate
             adjust_learning_rate(optimizers=[self.optimizer],
-                                 lr=self.train_opt.get('lr', 1e-4),
+                                 lr=self.train_opt['lr'],
                                  iteration=self.global_step,
                                  dec_lr_step=self.train_opt['dec_lr'],
                                  lr_adj_base =self.train_opt['lr_adj_base'])
 
             # log training info
             if self.global_step % self.arg.log_step == 0:
-                # ── Gradient Norm Monitoring ──────────────────────────────────
-                # Calculate global grad norm for backbone and GNN separately
-                enc_grad_norm = 0.0
-                for p in self.enc_module.parameters():
-                    if p.grad is not None:
-                        enc_grad_norm += p.grad.detach().data.norm(2).item() ** 2
-                enc_grad_norm = enc_grad_norm ** 0.5
-
-                gnn_grad_norm = 0.0
-                for p in self.gnn_module.parameters():
-                    if p.grad is not None:
-                        gnn_grad_norm += p.grad.detach().data.norm(2).item() ** 2
-                gnn_grad_norm = gnn_grad_norm ** 0.5
-
-                self.log.info('step : {}  loss : {:.4f}  acc : {:.4f}  grad_enc : {:.4f}  grad_gnn : {:.4f}'.format(
+                self.log.info('step : {}  train_edge_loss : {}  node_acc : {}'.format(
                     self.global_step,
                     query_edge_loss_generations[-1],
-                    query_node_cls_acc_generations[-1],
-                    enc_grad_norm,
-                    gnn_grad_norm))
+                    query_node_cls_acc_generations[-1]))
 
             # evaluation
             if self.global_step > 0 and self.global_step % self.eval_opt['interval'] == 0:
                 is_best = 0
                 val_acc = self.eval(partition='val')
-                torch.cuda.empty_cache()
-
-                # ── Open-World HM validation (Paper Source 6) ─────────────────
-                # Dùng Harmonic Mean (HM) thay val_acc để chọn model tốt nhất.
-                val_hm, val_S, val_U = self.eval_hm(partition='val')
-                torch.cuda.empty_cache()
-
-                if val_hm > self.best_hm:
+                torch.cuda.empty_cache() # Clear cache after evaluation to free up VRAM
+                if val_acc > self.test_acc:
                     is_best = 1
-                    self.best_hm = val_hm
-                    self.test_acc = val_acc   # giữ val_acc để log tham khảo
+                    self.test_acc = val_acc
                     self.best_step = self.global_step
 
                 # log evaluation info
-                self.log.info(
-                    'step:{} | val_acc:{:.4f} | HM:{:.4f} S:{:.4f} U:{:.4f} | best_HM:{:.4f} step:{}'.format(
-                        self.global_step, val_acc,
-                        val_hm, val_S, val_U,
-                        self.best_hm, self.best_step))
+                self.log.info('val_acc : {}         step : {} '.format(val_acc, self.global_step))
+                self.log.info('best_val_acc : {}    step : {}'.format( self.test_acc, self.best_step))
 
                 # save checkpoints (best and newest)
                 save_checkpoint({
@@ -201,7 +164,6 @@ class AGNNTrainer(object):
                     'enc_module_state_dict': self.enc_module.state_dict(),
                     'gnn_module_state_dict': self.gnn_module.state_dict(),
                     'test_acc': self.test_acc,
-                    'best_hm': self.best_hm,
                     'optimizer': self.optimizer.state_dict(),
                 }, is_best, self.arg.checkpoint_dir)
 
@@ -339,131 +301,6 @@ class AGNNTrainer(object):
 
         return np.array(query_node_cls_acc_generations).mean()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Open-World HM Validation (Paper Source 6)
-    # ──────────────────────────────────────────────────────────────────────────
-    def eval_hm(self, partition='val', num_episodes=50,
-                num_unknown_ways=5, num_unknown_queries=5):
-        """
-        Chạy N episodes Open World trên tập val, trả về HM = 2SU/(S+U).
-        Dùng để chọn checkpoint tốt nhất thay vì val_acc (Paper Source 6).
-        """
-        import random as _random
-
-        num_ways  = self.eval_opt['num_ways']
-        num_shots = self.eval_opt['num_shots']
-        num_kq    = self.eval_opt['num_queries']
-        device    = self.arg.device
-
-        dataset = self.data_loader[partition].dataset \
-            if hasattr(self.data_loader[partition], 'dataset') else None
-        if dataset is None:
-            self.log.warning('eval_hm: cannot access dataset, returning HM=0')
-            return 0.0, 0.0, 0.0
-
-        all_cls = dataset.full_class_list
-        l2i     = dataset.label2ind
-
-        if len(all_cls) < num_ways + num_unknown_ways:
-            self.log.warning(
-                f'eval_hm: not enough classes ({len(all_cls)}) for '
-                f'{num_ways}+{num_unknown_ways}, returning HM=0')
-            return 0.0, 0.0, 0.0
-
-        self.enc_module.eval()
-        self.gnn_module.eval()
-
-        def _get_t(idx):
-            item = dataset._get_pil(idx)
-            if getattr(dataset, '_cache_is_tensor', False):
-                return item.float()
-            return dataset.aug_transform(item).float()
-
-        C, H, W = dataset.data_size
-        all_conf, all_pred, all_true, all_is_unk = [], [], [], []
-
-        with torch.no_grad():
-            for _ in range(num_episodes):
-                chosen = _random.sample(all_cls, num_ways + num_unknown_ways)
-                known_cls   = chosen[:num_ways]
-                unknown_cls = chosen[num_ways:]
-
-                n_sup = num_ways * num_shots
-                n_kq  = num_ways * num_kq
-                n_uq  = num_unknown_ways * num_unknown_queries
-                n_q   = n_kq + n_uq
-                n_all = n_sup + n_q
-
-                sup_d = torch.empty(1, n_sup, C, H, W, device=device)
-                sup_l = torch.empty(1, n_sup, dtype=torch.float32, device=device)
-                q_d   = torch.empty(1, n_q,   C, H, W, device=device)
-                q_l   = torch.full((1, n_q), -1, dtype=torch.float32)
-
-                for ci, cls in enumerate(known_cls):
-                    pool = l2i[cls]
-                    idx  = _random.sample(pool, num_shots + num_kq)
-                    for k, ii in enumerate(idx[:num_shots]):
-                        sup_d[0, ci*num_shots+k] = _get_t(ii).to(device)
-                        sup_l[0, ci*num_shots+k] = ci
-                    for k, ii in enumerate(idx[num_shots:]):
-                        pos = ci*num_kq + k
-                        q_d[0, pos] = _get_t(ii).to(device)
-                        q_l[0, pos] = ci
-
-                for ui, cls in enumerate(unknown_cls):
-                    pool = l2i[cls]
-                    for k, ii in enumerate(_random.sample(pool, num_unknown_queries)):
-                        q_d[0, n_kq + ui*num_unknown_queries + k] = _get_t(ii).to(device)
-
-                is_unk = [False]*n_kq + [True]*n_uq
-
-                all_data = torch.cat([sup_d, q_d], dim=1)
-                last, second = backbone_two_stage_initialization(all_data, self.enc_module)
-
-                edge = torch.zeros(1, n_all, n_all, device=device)
-                edge[:, :n_sup, :n_sup] = 1.0/n_sup
-                edge[:, n_sup:, :n_sup] = 1.0/n_sup
-                for i in range(n_q):
-                    edge[:, n_sup+i, n_sup+i] = 1.0
-
-                point_sims, _ = self.gnn_module(
-                    second, last,
-                    torch.zeros(1, n_all, num_ways, device=device),
-                    edge, sup_l.long())
-
-                sim_last = point_sims[-1]
-                q2s = sim_last[:, n_sup:, :n_sup]
-                oh  = one_hot_encode(num_ways, sup_l.long(), device)
-                cls_scores = torch.bmm(q2s, oh).squeeze(0).cpu().numpy()
-
-                conf = cls_scores.max(axis=1)
-                pred = cls_scores.argmax(axis=1)
-                true = q_l.squeeze(0).numpy()
-
-                all_conf.extend(conf.tolist())
-                all_pred.extend(pred.tolist())
-                all_true.extend(true.tolist())
-                all_is_unk.extend(is_unk)
-
-        all_conf   = np.array(all_conf)
-        all_pred   = np.array(all_pred)
-        all_true   = np.array(all_true)
-        all_is_unk = np.array(all_is_unk)
-        known_mask   = ~all_is_unk
-        unknown_mask =  all_is_unk
-
-        best_HM, best_S, best_U = 0.0, 0.0, 0.0
-        for g in np.linspace(0.0, 1.0, 101):
-            not_rej = all_conf > g
-            correct = (all_pred == all_true)
-            S  = float((not_rej & correct & known_mask).sum()) / max(known_mask.sum(), 1)
-            U  = float(((all_conf <= g) & unknown_mask).sum()) / max(unknown_mask.sum(), 1)
-            HM = 2*S*U/(S+U) if (S+U) > 0 else 0.0
-            if HM > best_HM:
-                best_HM, best_S, best_U = HM, S, U
-
-        return best_HM, best_S, best_U
-
     def compute_train_loss_pred(self,
                                 all_label_in_edge,
                                 point_similarities,
@@ -489,39 +326,12 @@ class AGNNTrainer(object):
             for point_similarity in point_similarities
         ]
 
-        # ── Cross-Entropy loss với Margin tại mỗi generation ──────────────────
+        # ── Cross-Entropy loss tại mỗi generation — paper Eq. 13 ─────────────
         query_node_ce_loss = []
         for query_node_pred in query_node_pred_generations:
-            
-            # Apply additive margin to ground truth class BEFORE scaling
-            if self.loss_margin > 0:
-                # Create mask for ground truth class
-                gt_mask = torch.zeros_like(query_node_pred).scatter_(2, query_label.long().unsqueeze(2), 1.0)
-                # Subtract margin from correct class to make it harder (forcing higher score)
-                logits = (query_node_pred - (gt_mask * self.loss_margin)) * self.logit_scale
-            else:
-                logits = query_node_pred * self.logit_scale
-
-            pred_flat  = logits.contiguous().view(-1, logits.shape[-1])
+            pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
             label_flat = query_label.long().contiguous().view(-1)
             query_node_ce_loss.append(self.pred_loss(pred_flat, label_flat).mean())
-
-        # ── Feasibility Margin Loss (Paper Source 6) ───────────────────────────
-        # Đẩy gt score cách xa best-wrong score ít nhất một margin.
-        # Áp dụng trên layer cuối (generation thứ -1) để không làm nhiễu các layer đầu.
-        lambda_f = self.config.get('lambda_feasibility', 0.1)
-        if lambda_f > 0:
-            pred_last = query_node_pred_generations[-1]  # [B, nq, nw]
-            # Điểm của lớp đúng: [B, nq]
-            gt_score = pred_last.gather(2, query_label.long().unsqueeze(2)).squeeze(2)
-            # Điểm cao nhất của lớp sai: đặt gt thành -inf rồi lấy max
-            wrong_scores = pred_last.clone()
-            wrong_scores.scatter_(2, query_label.long().unsqueeze(2), -1e9)
-            best_wrong = wrong_scores.max(dim=2)[0]  # [B, nq]
-            # Hinge loss: max(0, best_wrong - gt_score + margin)
-            feasibility_loss = torch.relu(best_wrong - gt_score + self.loss_margin).mean()
-        else:
-            feasibility_loss = torch.tensor(0.0, device=self.arg.device)
 
         # ── Train accuracy ────────────────────────────────────────────────────
         query_node_acc_generations = [
@@ -537,7 +347,6 @@ class AGNNTrainer(object):
             total_loss += [query_node_ce_loss[l].view(-1) * self.config['generation_weight']]
         total_loss += [query_node_ce_loss[-1].view(-1) * 1.0]
         total_loss = torch.mean(torch.cat(total_loss, 0))
-        total_loss = total_loss + lambda_f * feasibility_loss
 
         return total_loss, query_node_acc_generations, query_node_ce_loss
 
@@ -564,10 +373,8 @@ class AGNNTrainer(object):
             one_hot_encode(self.eval_opt['num_ways'], support_label.long(), self.arg.device)
         )
 
-        # Cross-Entropy loss (Không dùng margin khi eval để phản ánh đúng thực tế)
-        # Nhưng vẫn dùng logit_scale để loss value khớp với training
-        logits = query_node_pred * self.logit_scale
-        pred_flat  = logits.contiguous().view(-1, logits.shape[-1])
+        # Cross-Entropy loss
+        pred_flat  = query_node_pred.contiguous().view(-1, query_node_pred.shape[-1])
         label_flat = query_label.long().contiguous().view(-1)
         query_ce_loss = self.pred_loss(pred_flat, label_flat).mean()
 
@@ -578,25 +385,6 @@ class AGNNTrainer(object):
         query_node_accs  += [query_node_acc.item()]
 
         return query_node_accs, query_ce_losses
-
-
-def load_flexible(model, state_dict):
-    """
-    Nạp state_dict vào model một cách linh hoạt, bất kể model có dùng DataParallel hay không
-    và checkpoint có tiền tố 'module.' hay không.
-    """
-    # 1. Làm sạch state_dict: xóa 'module.' nếu có
-    clean_sd = {}
-    for k, v in state_dict.items():
-        name = k[7:] if k.startswith('module.') else k
-        clean_sd[name] = v
-    
-    # 2. Nạp vào model
-    # Nếu model hiện tại là DataParallel, nạp vào model.module
-    if isinstance(model, torch.nn.DataParallel):
-        model.module.load_state_dict(clean_sd)
-    else:
-        model.load_state_dict(clean_sd)
 
 
 def main():
@@ -638,11 +426,6 @@ def main():
     parser.add_argument('--mode', type=str, default='train',
                         help='train or eval')
 
-    parser.add_argument('--pretrain_path', type=str, default='',
-                        help='(optional) Đường dẫn đến file backbone_best.pth được tạo bởi pretrain.py. '
-                             'Nếu chỉ định và chưa có AGNN checkpoint, backbone sẽ được khởi tạo '
-                             'bằng các trọng số đã pretrain.')
-
     parser.add_argument('--tag', type=str, default='debug',
                         help='description')
 
@@ -670,21 +453,16 @@ def main():
     save_root = config.get('save_root', None)
     
     if save_root:
-        # Chỉ ghi đè nếu người dùng dùng giá trị mặc định của argparse (không truyền từ command line)
-        if args_opt.log_dir == os.path.join('.', 'logs'):
-            args_opt.log_dir = os.path.join(save_root, args_opt.exp_name, 'logs')
-        
-        if args_opt.checkpoint_dir == os.path.join('.', 'checkpoints'):
-            args_opt.checkpoint_dir = os.path.join(save_root, args_opt.exp_name, 'checkpoints')
-            
-        log_path = args_opt.log_dir
+        # Unified structure: {save_root}/{exp_name}/logs and {save_root}/{exp_name}/checkpoints
+        args_opt.log_dir = os.path.join(save_root, args_opt.exp_name, 'logs')
+        args_opt.checkpoint_dir = os.path.join(save_root, args_opt.exp_name, 'checkpoints')
+        log_path = args_opt.log_dir # logs are stored directly in this dir
     else:
         # Fallback to original behavior or config-overridden dirs
         args_opt.log_dir = config.get('log_dir', args_opt.log_dir)
         args_opt.checkpoint_dir = config.get('checkpoint_dir', args_opt.checkpoint_dir)
         log_path = os.path.join(args_opt.log_dir, args_opt.exp_name)
-        if args_opt.checkpoint_dir == os.path.join('.', 'checkpoints'):
-             args_opt.checkpoint_dir = os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)
+        args_opt.checkpoint_dir = os.path.join(args_opt.checkpoint_dir, args_opt.exp_name)
 
     # Always override log steps from config if present, regardless of save_root
     args_opt.log_step = config.get('log_step', args_opt.log_step)
@@ -760,14 +538,13 @@ def main():
 
     ablation_mode = config.get('ablation_mode', 'full')
     logger.info('Ablation mode: {}'.format(ablation_mode))
-    gnn_module = AGNN(in_c=config['emb_size'],
-                      num_generations=config['num_generation'],
-                      dropout=train_opt['dropout'],
-                      num_support_sample=train_opt['num_ways'] * train_opt['num_shots'],
-                      num_sample=train_opt['num_ways'] * (train_opt['num_shots'] + train_opt['num_queries']),
-                      loss_indicator=train_opt['loss_indicator'],
-                      point_metric=config['point_distance_metric'],
-                      ablation_mode=config.get('ablation_mode', 'full'))
+    gnn_module = AGNN(config['num_generation'],
+                      train_opt['dropout'],
+                      train_opt['num_ways'] * train_opt['num_shots'],
+                      train_opt['num_ways'] * train_opt['num_shots'] + train_opt['num_ways'] * train_opt['num_queries'],
+                      train_opt['loss_indicator'],
+                      config['point_distance_metric'],
+                      ablation_mode=ablation_mode)
 
 
     # num_params = 0
@@ -784,119 +561,45 @@ def main():
         gnn_module = nn.DataParallel(gnn_module, device_ids=range(args_opt.num_gpu), dim=0)
         print('done!\n')
 
-    # Kiểm tra xem checkpoint_dir là thư mục hay là file trực tiếp
-    if os.path.isfile(args_opt.checkpoint_dir):
-        agnn_ckpt_path = args_opt.checkpoint_dir
-        agnn_ckpt_exists = True
-    else:
-        agnn_ckpt_path = os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar')
-        agnn_ckpt_exists = os.path.exists(args_opt.checkpoint_dir) and \
-                           os.path.exists(agnn_ckpt_path)
-
-    if not agnn_ckpt_exists:
+    if not os.path.exists(args_opt.checkpoint_dir):
+        os.makedirs(args_opt.checkpoint_dir)
+        logger.info('no checkpoint for model: {}, make a new one at {}'.format(
+            args_opt.exp_name,
+            args_opt.checkpoint_dir))
         best_step = 0
-        logger.info('no checkpoint found at: {}, starting from step 0'.format(args_opt.checkpoint_dir))
     else:
+        if not os.path.exists(os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar')):
+            best_step = 0
+        else:
             logger.info('find a checkpoint, loading checkpoint from {}'.format(
                 args_opt.checkpoint_dir))
-            best_checkpoint = torch.load(agnn_ckpt_path,
-                                         map_location=args_opt.device,
+            best_checkpoint = torch.load(os.path.join(args_opt.checkpoint_dir, 'model_best.pth.tar'), 
+                                         map_location=args_opt.device, 
                                          weights_only=False)
-
+ 
             logger.info('best model pack loaded')
             best_step = best_checkpoint['iteration']
-            
-            # Nạp trọng số linh hoạt cho cả Encoder và GNN
-            load_flexible(enc_module, best_checkpoint['enc_module_state_dict'])
-            load_flexible(gnn_module, best_checkpoint['gnn_module_state_dict'])
-            
-            logger.info('current best test accuracy is: {}, at step: {}'.format(
-                best_checkpoint['test_acc'], best_step))
-
-    # ── Load pretrained backbone (chỉ khi chưa có AGNN checkpoint) ─────────────
-    # Nếu đã có AGNN checkpoint thì bỏ qua pretrain_path vì AGNN checkpoint
-    # đã bao gồm backbone weights đã được fine-tune.
-    if args_opt.pretrain_path and not agnn_ckpt_exists:
-        pretrain_path = args_opt.pretrain_path
-        if not os.path.exists(pretrain_path):
-            logger.error(f'pretrain_path không tồn tại: {pretrain_path}')
-            exit()
-
-        logger.info(f'Loading pretrained backbone từ: {pretrain_path}')
-        ckpt = torch.load(pretrain_path,
-                          map_location=args_opt.device,
-                          weights_only=False)
-
-        # Kiểm tra emb_size tương thích
-        ckpt_emb = ckpt.get('emb_size', None)
-        if ckpt_emb is not None and ckpt_emb != config['emb_size']:
-            logger.error(
-                f'emb_size không khớp: checkpoint={ckpt_emb}, '
-                f'config={config["emb_size"]}. '
-                f'Hãy đảm bảo pretrain và AGNN dùng cùng emb_size.')
-            exit()
-
-        backbone_state = None
-        if 'backbone_state_dict' in ckpt:
-            backbone_state = ckpt['backbone_state_dict']
-        elif 'model_sd' in ckpt:
-            backbone_state = ckpt['model_sd']
-            logger.info('Không tìm thấy "backbone_state_dict", sử dụng "model_sd" thay thế.')
-        elif 'state_dict' in ckpt:
-            backbone_state = ckpt['state_dict']
-            logger.info('Không tìm thấy "backbone_state_dict", sử dụng "state_dict" thay thế.')
-        else:
-            # Kiểm tra xem có phải là raw state dict không bằng cách xem một key bất kỳ
-            # thường backbone sẽ có các key bắt đầu bằng conv1, layer...
-            sample_key = list(ckpt.keys())[0]
-            if isinstance(sample_key, str) and (sample_key.startswith('conv') or sample_key.startswith('layer')):
-                backbone_state = ckpt
-                logger.info('Phát hiện file là raw state dict, tiến hành load trực tiếp.')
-            else:
-                logger.error('Không tìm thấy trọng số hợp lệ trong file checkpoint. '
-                             f'Các keys hiện có: {list(ckpt.keys())}')
-                exit()
-
-        # Strict=True — keys phải khớp hoàn toàn với ResNet12
-        try:
-            enc_module.load_state_dict(backbone_state, strict=True)
-            logger.info(
-                f'✓ Pretrained backbone loaded thành công (strict=True, '
-                f'{len(backbone_state)} keys). '
-                f'Checkpoint info: val_acc={ckpt.get("val_acc", "N/A")}')
-        except RuntimeError as e:
-            logger.warning(f'Load strict=True thất bại do lệch keys. Thử load với strict=False...')
-            enc_module.load_state_dict(backbone_state, strict=False)
-            logger.info('✓ Pretrained backbone loaded thành công với strict=False.')
-    elif args_opt.pretrain_path and agnn_ckpt_exists:
-        logger.info(
-            'pretrain_path được chỉ định nhưng đã có AGNN checkpoint '
-            '→ bỏ qua pretrain_path, dùng AGNN checkpoint.')
+            enc_module.load_state_dict(best_checkpoint['enc_module_state_dict'])
+            gnn_module.load_state_dict(best_checkpoint['gnn_module_state_dict'])
+            logger.info('current best test accuracy is: {}, at step: {}'.format(best_checkpoint['test_acc'], best_step))
 
     if config['dataset_name'] == 'custom':
         img_size = config.get('image_size', 84)
         split_path = config.get('split_path', None)
         dataset_train = dataset(root=args_opt.dataset_root, partition='train', image_size=img_size, split_path=split_path)
         dataset_valid = dataset(root=args_opt.dataset_root, partition='val', image_size=img_size, split_path=split_path)
-        
-        # Chỉ load tập test nếu ở chế độ eval
-        dataset_test = None
-        if args_opt.mode == 'eval':
-            dataset_test = dataset(root=args_opt.dataset_root, partition='test', image_size=img_size, split_path=split_path)
     else:
         dataset_train = dataset(root=args_opt.dataset_root, partition='train')
         dataset_valid = dataset(root=args_opt.dataset_root, partition='val')
-        
-        dataset_test = None
-        if args_opt.mode == 'eval':
-            dataset_test = dataset(root=args_opt.dataset_root, partition='test')
 
     # ── Pre-load ảnh vào RAM để tối ưu tốc độ DataLoader ────────────────────
+    # cache_to_memory() load PIL images vào một list trong main process.
+    # Trên Colab/Kaggle (Linux, fork-based workers), các worker chia sẻ
+    # bộ nhớ qua copy-on-write → không tốn RAM gấp đôi.
+    # Nếu dataset quá lớn (> 8GB RAM), comment 2 dòng dưới để bỏ cache.
     if hasattr(dataset_train, 'cache_to_memory'):
         dataset_train.cache_to_memory()
         dataset_valid.cache_to_memory()
-        if dataset_test is not None:
-            dataset_test.cache_to_memory()
 
     train_loader = DataLoader(dataset_train,
                               num_tasks=train_opt['batch_size'],
@@ -912,20 +615,9 @@ def main():
                               num_queries=eval_opt['num_queries'],
                               epoch_size=eval_opt['iteration'],
                               num_workers=args_opt.num_workers)
-    
-    test_loader = None
-    if dataset_test is not None:
-        test_loader  = DataLoader(dataset_test,
-                                  num_tasks=eval_opt['batch_size'],
-                                  num_ways=eval_opt['num_ways'],
-                                  num_shots=eval_opt['num_shots'],
-                                  num_queries=eval_opt['num_queries'],
-                                  epoch_size=eval_opt['iteration'],
-                                  num_workers=args_opt.num_workers)
 
     data_loader = {'train': train_loader,
-                   'val': valid_loader,
-                   'test': test_loader}
+                   'val': valid_loader}
 
     # create trainer
     trainer = AGNNTrainer(enc_module=enc_module,
