@@ -359,10 +359,13 @@ def build_backbone(config):
 
 def build_gnn(config):
     train_opt = config['train_config']
+    # Use the same dropout as training to ensure model architecture (layer count) matches checkpoint
+    dropout = train_opt.get('dropout', 0.0)
+    
     return AGNN(
         in_c=config['emb_size'],
         num_generations=config['num_generation'],
-        dropout=0.0,   # eval mode — no dropout needed
+        dropout=dropout,
         num_support_sample=train_opt['num_ways'] * train_opt['num_shots'],
         num_sample=train_opt['num_ways'] * (train_opt['num_shots'] + train_opt['num_queries']),
         loss_indicator=train_opt['loss_indicator'],
