@@ -119,10 +119,10 @@ class AGNNTrainer(object):
             last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
 
             # run the AGNN model
-            point_similarity, node_similarity_l2 = self.gnn_module(second_last_layer_data,
-                                                                   last_layer_data,
-                                                                   node_feature_gd,
-                                                                   edge_feature_gp, support_label)
+            point_similarity, node_similarity_l2, _ = self.gnn_module(second_last_layer_data,
+                                                                    last_layer_data,
+                                                                    node_feature_gd,
+                                                                    edge_feature_gp, support_label)
 
             # compute loss
             total_loss, query_node_cls_acc_generations, query_edge_loss_generations = \
@@ -290,7 +290,7 @@ class AGNNTrainer(object):
                 last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
 
                 # run the AGNN model
-                point_similarity, _  = self.gnn_module(second_last_layer_data,
+                point_similarity, _, _  = self.gnn_module(second_last_layer_data,
                                                 last_layer_data,
                                                 node_feature_gd,
                                                 edge_feature_gp,
