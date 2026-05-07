@@ -140,9 +140,10 @@ def run_tsne(args, config):
     low_a = tsne.fit_transform(feats_a)
     
     # Plotting
-    colors = plt.cm.tab10(np.linspace(0, 1, num_ways))
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    # Danh sách các màu cực kỳ tươi và nổi bật
+    vibrant_colors = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500', '#8A2BE2']
     
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
     titles = ["Backbone Features (Initial)", f"AGNN Refined Features ({config['num_generation']} Layers)"]
     data_2d = [low_b, low_a]
     
@@ -150,13 +151,16 @@ def run_tsne(args, config):
         ax = axes[idx]
         curr_2d = data_2d[idx]
         for ci, cname in enumerate(class_names):
-            ms = is_sup & (lbl_all == ci)
-            mq = ~is_sup & (lbl_all == ci)
-            ax.scatter(curr_2d[ms, 0], curr_2d[ms, 1], c=[colors[ci]], marker='o', s=100, edgecolors='k', label=f"{cname} (S)")
-            ax.scatter(curr_2d[mq, 0], curr_2d[mq, 1], c=[colors[ci]], marker='*', s=200, edgecolors='k', label=f"{cname} (Q)")
-        ax.set_title(titles[idx], fontweight='bold')
-        ax.grid(True, alpha=0.2)
-        if idx == 1: ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
+            mask = (lbl_all == ci)
+            color = vibrant_colors[ci % len(vibrant_colors)]
+            # Vẽ tất cả các nút là hình tròn 'o'
+            ax.scatter(curr_2d[mask, 0], curr_2d[mask, 1], 
+                       c=[color], marker='o', s=120, 
+                       edgecolors='k', lw=0.5, label=f"{cname}")
+            
+        ax.set_title(titles[idx], fontsize=13, fontweight='bold')
+        ax.grid(True, linestyle='--', alpha=0.3)
+        if idx == 1: ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=9)
 
     plt.tight_layout()
     out_path = os.path.join(args.output_dir, f"tsne_layer_{config['num_generation']}.png")
