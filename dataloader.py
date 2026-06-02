@@ -258,7 +258,7 @@ class CustomImageFolder(data.Dataset):
             self.aug_transform = transforms.Compose([
                 transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0)),
                 transforms.RandomHorizontalFlip(),
-                transforms.ColorJitter(brightness=.1, contrast=.1, saturation=.1, hue=.1),
+                transforms.ColorJitter(brightness=0.3, contrast=0.2, saturation=0.2, hue=0.05),
                 transforms.ToTensor(),
                 normalize
             ])

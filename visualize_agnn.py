@@ -11,12 +11,15 @@ Script tự động sample 1 episode few-shot từ val classes,
 rồi tạo 4 loại visualization (không cần GPU).
 
 Usage:
-  python visualize_agnn.py \\
-    --config  config/5way_5shot_resnet50_custom.py \\
-    --checkpoint  checkpoints/.../model_best.pth.tar \\
-    --images_root  C:/path/to/images \\
-    --split_json   C:/path/to/full_split.json \\
-    --output_dir   visualizations/ \\
+  python visualize_agnn.py \
+    --config  config/5way_5shot_resnet50_custom.py \
+    --checkpoint  checkpoints/.../model_best.pth.tar \
+    --images_root  C:/path/to/images \
+    --split_json   C:/path/to/full_split.json \
+    --output_dir   visualizations/ \
+    --query_root   C:/path/to/custom_queries (Folder per class) \
+    --query_folder C:/path/to/single_folder (Flat folder with 10 images) \
+    --target_layer layer3 (Optional: layer3, layer4...) \
     --num_ways 5 --num_shots 5 --num_queries 3 --seed 42
 """
 
@@ -116,7 +119,9 @@ def load_models(args, config, num_supports, num_queries):
     else:
         raise ValueError(f"Unsupported backbone: {bname}")
 
+    # FIX: Thêm config['emb_size'] vào đối số đầu tiên của AGNN
     gnn = AGNN(
+        config['emb_size'],
         config['num_generation'],
         config['train_config']['dropout'],
         num_supports,
@@ -137,18 +142,27 @@ def load_models(args, config, num_supports, num_queries):
 # ── Grad-CAM (pure torch hooks) ───────────────────────────────
 
 class GradCAM:
-    def __init__(self, encoder, backbone_name):
+    def __init__(self, encoder, backbone_name, target_layer_name=None):
         self.encoder = encoder
         self._act = None
         self._grad = None
         self._hooks = []
-        layer = self._target_layer(backbone_name)
+        layer = self._target_layer(backbone_name, target_layer_name)
         self._hooks.append(layer.register_forward_hook(
             lambda m,i,o: setattr(self, '_act', o.detach())))
         self._hooks.append(layer.register_full_backward_hook(
             lambda m,gi,go: setattr(self, '_grad', go[0].detach())))
 
-    def _target_layer(self, name):
+    def _target_layer(self, name, layer_name=None):
+        # Nếu người dùng chỉ định layer cụ thể
+        if layer_name:
+            try:
+                # Thử tìm layer trong encoder (ví dụ: layer4, conv_4)
+                return getattr(self.encoder, layer_name)
+            except AttributeError:
+                print(f"  [Warning] Layer '{layer_name}' không tìm thấy trong {name}. Dùng mặc định.")
+
+        # Mặc định (thường là layer cuối cùng)
         if name in ('resnet50', 'resnet12'):
             return self.encoder.layer4
         elif name == 'convnet':
@@ -158,13 +172,30 @@ class GradCAM:
     def remove(self):
         for h in self._hooks: h.remove()
 
-    def compute(self, img_t, sup_embeds):
-        """img_t: [1,3,H,W]. Returns numpy [H',W'] in [0,1]."""
+    def compute(self, img_t, sup_embeds, other_embeds=None, mode='mean'):
+        """
+        img_t: [1,3,H,W]
+        sup_embeds: [K, 128] (tập ảnh support của class mục tiêu)
+        other_embeds: [K_others, 128] (tập ảnh support của các class khác - dùng cho contrastive)
+        mode: 'mean', 'max', hoặc 'contrastive'
+        """
         self.encoder.zero_grad()
         img_req = img_t.clone().detach().requires_grad_(True)
         emb = self.encoder(img_req)[0]                      # [1,128]
-        proto = sup_embeds.mean(0)
-        score = F.cosine_similarity(emb, proto.unsqueeze(0))
+        
+        if mode == 'max':
+            scores = F.cosine_similarity(emb, sup_embeds)
+            score = scores.max()
+        elif mode == 'contrastive' and other_embeds is not None:
+            # Score = (giống class mình) - (giống các class khác)
+            target_sim = F.cosine_similarity(emb, sup_embeds.mean(0).unsqueeze(0))
+            other_sim = F.cosine_similarity(emb, other_embeds.mean(0).unsqueeze(0))
+            score = target_sim - other_sim
+        else:
+            # Mặc định: 'mean'
+            proto = sup_embeds.mean(0)
+            score = F.cosine_similarity(emb, proto.unsqueeze(0))
+            
         score.backward()
 
         weights = self._grad.mean(dim=(2,3), keepdim=True)
@@ -193,10 +224,50 @@ def run_all(args, config):
     tf          = get_transform(img_size)
 
     # 1. Sample episode
-    print(f"Sampling {num_ways}-way {num_shots}-shot episode (seed={args.seed}) from val split...")
-    class_names, support_paths, query_paths = sample_episode(
+    print(f"Sampling {num_ways}-way {num_shots}-shot episode (seed={args.seed}) từ partition '{args.partition}'...")
+    class_names, support_paths, sampled_query_paths = sample_episode(
         args.images_root, args.split_json,
-        num_ways, num_shots, num_queries, args.seed)
+        num_ways, num_shots, num_queries, args.seed, 
+        partition=args.partition) # Thêm partition vào đây
+
+    # Logic for custom query_root or query_folder
+    if args.query_folder:
+        print(f"Loading queries from single flat folder: {args.query_folder}")
+        all_files = sorted([os.path.join(args.query_folder, f) for f in os.listdir(args.query_folder)
+                            if f.lower().endswith(('.jpg','.jpeg','.png','.bmp','.webp'))])
+        
+        # Thử khớp tên file với class_names
+        query_paths = [[] for _ in range(num_ways)]
+        for p in all_files:
+            fname = os.path.basename(p).lower()
+            matched = False
+            for ci, cname in enumerate(class_names):
+                # Khớp theo kiểu "chứa trong tên"
+                if cname.lower().replace('-','_') in fname.replace('-','_'):
+                    query_paths[ci].append(p)
+                    matched = True
+                    break
+            if not matched:
+                # Nếu không khớp, tạm cho vào class đầu tiên và cảnh báo
+                query_paths[0].append(p)
+                print(f"  [Info] Filename '{fname}' not matched to any class. Assigned to Class 0 for prediction.")
+    elif args.query_root:
+        print(f"Using custom query root: {args.query_root}")
+        query_paths = []
+        for cls in class_names:
+            cls_dir = os.path.join(args.query_root, cls)
+            if os.path.isdir(cls_dir):
+                imgs = sorted([os.path.join(cls_dir, p) for p in os.listdir(cls_dir)
+                               if p.lower().endswith(('.jpg','.jpeg','.png','.bmp','.webp'))])
+                selected = imgs[:num_queries]
+                query_paths.append(selected)
+                if not selected:
+                    print(f"  [Warning] Class folder '{cls}' is empty in query_root.")
+            else:
+                print(f"  [Warning] Class folder '{cls}' not found in query_root. Query for this class will be empty.")
+                query_paths.append([])
+    else:
+        query_paths = sampled_query_paths
 
     for i, cls in enumerate(class_names):
         print(f"  Class {i}: {cls}  (support={len(support_paths[i])}, query={len(query_paths[i])})")
@@ -219,6 +290,10 @@ def run_all(args, config):
     num_supports = len(sup_tensors)
     num_q_total  = len(qry_tensors)
 
+    if num_q_total == 0:
+        print("  [Error] No query images found! Check your folder/class names.")
+        return
+
     support_data  = torch.stack(sup_tensors).unsqueeze(0)           # [1,K,3,H,W]
     support_label = torch.tensor(sup_labels, dtype=torch.long).unsqueeze(0) # [1,K]
     query_data    = torch.stack(qry_tensors).unsqueeze(0)           # [1,Q,3,H,W]
@@ -238,7 +313,8 @@ def run_all(args, config):
 
     with torch.no_grad():
         last_emb, second_emb = backbone_two_stage_initialization(all_data, enc)
-        point_sims, _ = gnn(second_emb, last_emb, node_feat_gd, edge_feat_gp, sup_lbl_node)
+        # Fix: AGNN returns 3 values (point_similarities, node_similarities_l2, point_node)
+        point_sims, _, _ = gnn(second_emb, last_emb, node_feat_gd, edge_feat_gp, sup_lbl_node)
 
     # Predictions
     final_sim  = point_sims[-1]                                     # [1,N,N]
@@ -266,8 +342,9 @@ def run_all(args, config):
     # ─────────────────────────────────────────────────
     # VIZ 1: Grad-CAM
     # ─────────────────────────────────────────────────
-    print(f"\n[1/4] Grad-CAM heatmaps...")
-    gcam = GradCAM(enc, config['backbone'])
+    vis_size = 224  # Tăng lên để ảnh nền rõ nét hơn, không bị vỡ hạt pixel
+    print(f"\n[1/4] Grad-CAM heatmaps (Target Layer: {args.target_layer or 'Default'}, Vis Size: {vis_size})...")
+    gcam = GradCAM(enc, config['backbone'], args.target_layer)
 
     n_cols = min(num_q_total, 5)
     n_rows = (num_q_total + n_cols - 1) // n_cols
@@ -279,8 +356,14 @@ def run_all(args, config):
         pred_cls = pred_labels[qi].item()
         gt_cls   = gt_labels[qi]
         cls_mask = (sup_lbl_node[0] == pred_cls)
-        cam_np   = gcam.compute(img_t, sup_embeds[cls_mask])
-        ov       = overlay(qry_pils[qi], cam_np, img_size)
+        
+        # Chuẩn bị tập 'other' cho chế độ contrastive
+        other_embeds = sup_embeds[~cls_mask] if args.cam_mode == 'contrastive' else None
+        
+        # Sử dụng mode từ argument
+        cam_np = gcam.compute(img_t, sup_embeds[cls_mask], other_embeds=other_embeds, mode=args.cam_mode)
+        # SỬA: Dùng vis_size thay vì img_size để ảnh nền nét hơn
+        ov       = overlay(qry_pils[qi], cam_np, vis_size)
 
         r, c = divmod(qi, n_cols)
         ax = axes[r, c]
@@ -447,6 +530,14 @@ def main():
     p.add_argument('--split_json',   required=True,
                    help='Path tới full_split.json')
     p.add_argument('--output_dir',   default='visualizations')
+    p.add_argument('--query_root',   default=None,
+                   help='Thư mục chứa ảnh query (cấu trúc folder-theo-class)')
+    p.add_argument('--query_folder', default=None,
+                   help='Thư mục phẳng chứa các ảnh query (tự khớp class qua tên file)')
+    p.add_argument('--target_layer', default=None,
+                   help='Tên layer muốn chạy Grad-CAM (VD: layer3, layer4...)')
+    p.add_argument('--cam_mode',     choices=['mean', 'max', 'contrastive'], default='mean',
+                   help='Mục tiêu: mean (trung bình class), max (ảnh giống nhất), contrastive (so sánh với class khác)')
     p.add_argument('--num_ways',     type=int, default=5)
     p.add_argument('--num_shots',    type=int, default=5)
     p.add_argument('--num_queries',  type=int, default=3,
