@@ -392,7 +392,9 @@ class AGNN(nn.Module):
         # ── Label initialization ──────────────────────────────────────────────
         [b, nk] = tr_label.size()
         num_query_nodes = point_node.size(1) - nk
-        num_ways = 5
+        num_ways = int(tr_label.max().item() + 1)
+        if num_ways < 5:
+            num_ways = 5
         tr_label = tr_label.reshape(-1).unsqueeze(1)
         one_hot = torch.zeros((b * nk, num_ways), device=point_node.device)
         one_hot.scatter_(1, tr_label, 1)
