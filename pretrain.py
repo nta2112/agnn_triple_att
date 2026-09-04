@@ -35,8 +35,8 @@ import torchvision.transforms as transforms
 import importlib.util as _iutil
 import sys as _sys
 
-def _load_resnet12():
-    """Load ResNet12 từ backbone.py an toàn bằng cách monkey-patch import lỗi."""
+def _load_backbones():
+    """Load ResNet12 và ConvNet từ backbone.py an toàn bằng cách monkey-patch import lỗi."""
     # Fake module thế chỗ temp_last_vit.last_vit_model nếu chưa install
     if 'temp_last_vit' not in _sys.modules:
         import types
@@ -50,9 +50,9 @@ def _load_resnet12():
     spec = _iutil.spec_from_file_location('backbone', 'backbone.py')
     mod  = _iutil.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.ResNet12
+    return mod.ResNet12, mod.ConvNet
 
-ResNet12 = _load_resnet12()
+ResNet12, ConvNet = _load_backbones()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,20 +169,25 @@ class PretrainDataset(Dataset):
 
 class BackboneClassifier(nn.Module):
     """
-    ResNet12 backbone + linear classification head.
+    Backbone (ConvNet / ResNet12) + linear classification head.
 
     Thiết kế để đảm bảo tương thích hoàn toàn với AGNN:
-    - `self.backbone` là instance ResNet12 hoàn chỉnh (giống hệt trong main_gnn.py).
+    - `self.backbone` là instance ConvNet hoặc ResNet12 hoàn chỉnh (giống hệt trong main_gnn.py).
     - `self.classifier` là nn.Linear NGOÀI backbone → không nằm trong backbone.state_dict().
     - Khi lưu checkpoint, chỉ lưu `self.backbone.state_dict()`.
-    - Khi load vào enc_module (ResNet12) trong main_gnn.py, dùng strict=True.
+    - Khi load vào enc_module trong main_gnn.py, dùng strict=True.
     - Không bao giờ xảy ra lỗi key mismatch.
     """
 
-    def __init__(self, emb_size: int, num_classes: int, cifar_flag: bool = False):
+    def __init__(self, backbone_type: str, emb_size: int, num_classes: int, cifar_flag: bool = False):
         super().__init__()
-        # ResNet12 hoàn chỉnh — giống hệt đối tượng được khởi tạo trong main_gnn.py
-        self.backbone   = ResNet12(emb_size=emb_size, cifar_flag=cifar_flag)
+        self.backbone_type = backbone_type.lower()
+        if self.backbone_type == 'convnet':
+            self.backbone = ConvNet(emb_size=emb_size, cifar_flag=cifar_flag)
+        elif self.backbone_type == 'resnet12':
+            self.backbone = ResNet12(emb_size=emb_size, cifar_flag=cifar_flag)
+        else:
+            raise ValueError(f"Backbone không hợp lệ: {backbone_type}. Chỉ hỗ trợ 'convnet' hoặc 'resnet12'.")
         
         # Classifier heads cho cả 2 nhánh (Layer Last và Layer Second)
         # Việc train cả 2 nhánh giúp backbone học được cả đặc trưng ngữ nghĩa và cấu trúc
@@ -200,8 +205,8 @@ class BackboneClassifier(nn.Module):
 
     def get_backbone_state_dict(self) -> dict:
         """
-        Trả về state_dict của backbone (ResNet12 thuần).
-        Keys khớp 100% với ResNet12 trong main_gnn.py → load strict=True an toàn.
+        Trả về state_dict của backbone (thuần).
+        Keys khớp 100% với backbone trong main_gnn.py → load strict=True an toàn.
         """
         return self.backbone.state_dict()
 
@@ -391,6 +396,9 @@ def main():
                              '(phải có key "train" và "val")')
 
     # ── Model ─────────────────────────────────────────────────────────────────
+    parser.add_argument('--backbone', type=str, default='convnet',
+                        choices=['convnet', 'resnet12'],
+                        help='Kiến trúc backbone cần pretrain (convnet hoặc resnet12)')
     parser.add_argument('--emb_size', type=int, default=128,
                         help='Embedding size (phải khớp với emb_size trong AGNN config)')
     parser.add_argument('--image_size', type=int, default=84,
@@ -466,11 +474,12 @@ def main():
     # ── Model ─────────────────────────────────────────────────────────────────
     cifar_flag = (args.image_size <= 32)
     model = BackboneClassifier(
+        backbone_type=args.backbone,
         emb_size=args.emb_size,
         num_classes=num_classes,
         cifar_flag=cifar_flag)
 
-    log.info(f'Model: ResNet12(emb_size={args.emb_size}, cifar_flag={cifar_flag}) '
+    log.info(f'Model: {args.backbone.upper()}(emb_size={args.emb_size}, cifar_flag={cifar_flag}) '
              f'+ Dual Classifier Heads({args.emb_size} → {num_classes})')
 
     # ── Optimizer & Scheduler ─────────────────────────────────────────────────
@@ -487,23 +496,24 @@ def main():
              f'gamma={args.lr_decay_factor}')
 
     # ── Xác nhận cấu trúc key của backbone trước khi train ───────────────────
-    # Đây là bước kiểm tra cuối cùng để đảm bảo keys sẽ khớp với ResNet12.
-    ref_keys = set(ResNet12(emb_size=args.emb_size,
-                            cifar_flag=cifar_flag).state_dict().keys())
+    # Đây là bước kiểm tra cuối cùng để đảm bảo keys sẽ khớp với backbone trong main_gnn.py.
+    ref_cls = ConvNet if args.backbone == 'convnet' else ResNet12
+    ref_keys = set(ref_cls(emb_size=args.emb_size,
+                           cifar_flag=cifar_flag).state_dict().keys())
     backbone_keys = set(model.get_backbone_state_dict().keys())
 
     if ref_keys == backbone_keys:
-        log.info('✓ Key verification PASSED: backbone keys khớp hoàn toàn '
-                 f'với ResNet12 ({len(backbone_keys)} keys). '
+        log.info(f'✓ Key verification PASSED: backbone keys khớp hoàn toàn '
+                 f'với {args.backbone} ({len(backbone_keys)} keys). '
                  'Load strict=True sẽ an toàn.')
     else:
         missing  = ref_keys - backbone_keys
         extra    = backbone_keys - ref_keys
         log.error('✗ Key verification FAILED!')
         if missing:
-            log.error(f'  Keys thiếu (có trong ResNet12 nhưng không có trong backbone): {missing}')
+            log.error(f'  Keys thiếu (có trong {args.backbone} nhưng không có trong backbone): {missing}')
         if extra:
-            log.error(f'  Keys thừa (có trong backbone nhưng không có trong ResNet12): {extra}')
+            log.error(f'  Keys thừa (có trong backbone nhưng không có trong {args.backbone}): {extra}')
         raise RuntimeError('Key mismatch detected trước khi train. '
                            'Hãy kiểm tra lại backbone.py.')
 
