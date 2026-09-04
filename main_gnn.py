@@ -863,17 +863,16 @@ def main():
                              f'Các keys hiện có: {list(ckpt.keys())}')
                 exit()
 
-        # Strict=True — keys phải khớp hoàn toàn với ResNet12
+        # Nạp linh hoạt qua load_flexible để hỗ trợ cả single-GPU và multi-GPU (DataParallel)
         try:
-            enc_module.load_state_dict(backbone_state, strict=True)
+            load_flexible(enc_module, backbone_state)
             logger.info(
-                f'✓ Pretrained backbone loaded thành công (strict=True, '
-                f'{len(backbone_state)} keys). '
+                f'✓ Pretrained backbone loaded thành công vào enc_module '
+                f'({len(backbone_state)} keys, DataParallel={isinstance(enc_module, nn.DataParallel)}). '
                 f'Checkpoint info: val_acc={ckpt.get("val_acc", "N/A")}')
-        except RuntimeError as e:
-            logger.warning(f'Load strict=True thất bại do lệch keys. Thử load với strict=False...')
-            enc_module.load_state_dict(backbone_state, strict=False)
-            logger.info('✓ Pretrained backbone loaded thành công với strict=False.')
+        except Exception as e:
+            logger.error(f'Lỗi khi nạp pretrained backbone qua load_flexible: {e}')
+            exit()
     elif args_opt.pretrain_path and agnn_ckpt_exists:
         logger.info(
             'pretrain_path được chỉ định nhưng đã có AGNN checkpoint '
