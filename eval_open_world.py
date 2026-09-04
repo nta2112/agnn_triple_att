@@ -14,7 +14,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from backbone import ResNet12, ConvNet, ResNet50Pretrained, LaStViTBackbone
+from backbone import ResNet12, ConvNet, ResNet50Pretrained
 from agnn import AGNN
 from utils import backbone_two_stage_initialization, one_hot_encode
 from main_gnn import load_flexible
@@ -349,8 +349,6 @@ def build_backbone(config):
         return ResNet12(emb_size=emb_size)
     elif backbone == 'resnet50':
         return ResNet50Pretrained(emb_size=emb_size)
-    elif backbone == 'last_vit':
-        return LaStViTBackbone(emb_size=emb_size, pretrained=False)
     elif backbone == 'convnet':
         return ConvNet(emb_size=emb_size)
     else:

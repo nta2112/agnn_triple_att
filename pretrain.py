@@ -30,29 +30,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader as TorchDataLoader
 import torchvision.transforms as transforms
 
-# Import ResNet12 trực tiếp (không qua backbone.py module-level vì backbone.py có
-# import LaStViT có thể lỗi nếu không install torchvision đủ version mới nhất).
-import importlib.util as _iutil
-import sys as _sys
-
-def _load_backbones():
-    """Load ResNet12 và ConvNet từ backbone.py an toàn bằng cách monkey-patch import lỗi."""
-    # Fake module thế chỗ temp_last_vit.last_vit_model nếu chưa install
-    if 'temp_last_vit' not in _sys.modules:
-        import types
-        fake_tvit = types.ModuleType('temp_last_vit')
-        fake_model = types.ModuleType('temp_last_vit.last_vit_model')
-        fake_model.build_last_vit_b16 = None
-        fake_tvit.last_vit_model = fake_model
-        _sys.modules['temp_last_vit'] = fake_tvit
-        _sys.modules['temp_last_vit.last_vit_model'] = fake_model
-
-    spec = _iutil.spec_from_file_location('backbone', 'backbone.py')
-    mod  = _iutil.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.ResNet12, mod.ConvNet
-
-ResNet12, ConvNet = _load_backbones()
+from backbone import ResNet12, ConvNet
 
 
 # ─────────────────────────────────────────────────────────────────────────────
