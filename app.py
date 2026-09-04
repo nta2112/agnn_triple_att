@@ -484,7 +484,7 @@ with tab_predict:
                                     
                                     with torch.no_grad():
                                         last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, enc_module)
-                                        point_similarities, _, _ = gnn_module(second_last_layer_data,
+                                        point_similarities, _ = gnn_module(second_last_layer_data,
                                                                               last_layer_data,
                                                                               node_feature_gd,
                                                                               edge_feature_gp,
@@ -671,11 +671,11 @@ with tab_predict:
                                 
                                 # Forward Pass GNN
                                 with torch.no_grad():
-                                    point_similarities, _, _ = gnn_module(second_last_layer_data,
-                                                                          last_layer_data,
-                                                                          node_feature_gd,
-                                                                          edge_feature_gp,
-                                                                          support_label_exp)
+                                    point_similarities, _ = gnn_module(second_last_layer_data,
+                                                                      last_layer_data,
+                                                                      node_feature_gd,
+                                                                      edge_feature_gp,
+                                                                      support_label_exp)
                                                                           
                                 # Lấy dự đoán
                                 last_similarity = point_similarities[-1]

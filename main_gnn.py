@@ -245,7 +245,7 @@ class AGNNTrainer(object):
                     last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
 
 
-                    point_similarity, _ , node_features = self.gnn_module(second_last_layer_data,
+                    point_similarity, _ = self.gnn_module(second_last_layer_data,
                                                     last_layer_data,
                                                     node_feature_gd,
                                                     edge_feature_gp,
@@ -262,7 +262,7 @@ class AGNNTrainer(object):
                                                 query_label)
                     break
 
-        return point_similarity, node_features, support_label, query_label
+        return point_similarity, None, support_label, query_label
 
 
     def eval(self, partition='test', log_flag=True):

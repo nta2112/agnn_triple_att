@@ -207,11 +207,11 @@ def main():
             edge_feature_gp[:, num_total_supports + i, num_total_supports + i] = 1.0
 
         # GNN Forward Pass
-        point_similarities, _, _ = gnn_module(second_last_layer_data,
-                                              last_layer_data,
-                                              node_feature_gd,
-                                              edge_feature_gp,
-                                              support_label_exp)
+        point_similarities, _ = gnn_module(second_last_layer_data,
+                                           last_layer_data,
+                                           node_feature_gd,
+                                           edge_feature_gp,
+                                           support_label_exp)
 
         # Predict labels using the last layer similarities
         point_similarity = point_similarities[-1]
