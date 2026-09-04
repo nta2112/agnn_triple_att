@@ -223,8 +223,14 @@ class PretrainTrainer:
                  scheduler,
                  device: torch.device,
                  checkpoint_dir: str,
-                 log: logging.Logger):
-        self.model          = model.to(device)
+                 log: logging.Logger,
+                 num_gpu: int = 1):
+        if num_gpu > 1 and torch.cuda.device_count() > 1:
+            log.info(f'Sử dụng DataParallel trên {num_gpu} GPUs: {[torch.cuda.get_device_name(i) for i in range(num_gpu)]}')
+            self.model = nn.DataParallel(model, device_ids=list(range(num_gpu))).to(device)
+        else:
+            self.model = model.to(device)
+        self.num_gpu        = num_gpu
         self.train_loader   = train_loader
         self.val_loader     = val_loader
         self.optimizer      = optimizer
@@ -301,11 +307,12 @@ class PretrainTrainer:
             backbone_state_dict : dict  ← trực tiếp load vào ResNet12 (strict=True)
             emb_size            : int   ← để kiểm tra tính tương thích khi load
         """
+        raw_model = getattr(self.model, 'module', self.model)
         ckpt = {
             'epoch':               epoch,
             'val_acc':             val_acc,
-            'backbone_state_dict': self.model.get_backbone_state_dict(),
-            'emb_size':            self.model.backbone.emb_size,
+            'backbone_state_dict': raw_model.get_backbone_state_dict(),
+            'emb_size':            raw_model.backbone.emb_size,
         }
 
         last_path = os.path.join(self.checkpoint_dir, 'backbone_last.pth')
@@ -428,6 +435,8 @@ def main():
     # ── Misc ──────────────────────────────────────────────────────────────────
     parser.add_argument('--device', type=str, default='cuda:0',
                         help='Thiết bị (cuda:0 hoặc cpu)')
+    parser.add_argument('--num_gpu', type=int, default=1,
+                        help='Số lượng GPU sử dụng (ví dụ: 2 trên Kaggle Tesla T4 x2)')
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Số worker của DataLoader')
     parser.add_argument('--seed', type=int, default=42,
@@ -521,7 +530,7 @@ def main():
     trainer = PretrainTrainer(
         model=model, train_loader=train_loader, val_loader=val_loader,
         optimizer=optimizer, scheduler=scheduler, device=device,
-        checkpoint_dir=args.checkpoint_dir, log=log)
+        checkpoint_dir=args.checkpoint_dir, log=log, num_gpu=args.num_gpu)
 
     trainer.run(args.num_epochs)
 

@@ -1,4 +1,4 @@
-from backbone import ResNet12, ConvNet, ResNet50Pretrained
+from backbone import ResNet12, ConvNet, ResNet50Pretrained, LaStViTBackbone
 from agnn import AGNN
 from utils import set_logging_config, adjust_learning_rate, save_checkpoint, allocate_tensors, preprocessing, \
     initialize_nodes_edges, backbone_two_stage_initialization, one_hot_encode
@@ -31,6 +31,8 @@ class AGNNTrainer(object):
         :param config: model configurations
         :param best_step: starting step (step at best eval acc or 0 if starts from scratch)
         """
+        # best_hm: Harmonic Mean (S, U) dùng để chọn checkpoint tốt nhất (Paper Source 6)
+        self.best_hm = 0.0
 
         self.arg = arg
         self.config = config
@@ -119,10 +121,10 @@ class AGNNTrainer(object):
             last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
 
             # run the AGNN model
-            point_similarity, node_similarity_l2, _ = self.gnn_module(second_last_layer_data,
-                                                                    last_layer_data,
-                                                                    node_feature_gd,
-                                                                    edge_feature_gp, support_label)
+            point_similarity, node_similarity_l2 = self.gnn_module(second_last_layer_data,
+                                                                   last_layer_data,
+                                                                   node_feature_gd,
+                                                                   edge_feature_gp, support_label)
 
             # compute loss
             total_loss, query_node_cls_acc_generations, query_edge_loss_generations = \
@@ -173,15 +175,25 @@ class AGNNTrainer(object):
             if self.global_step > 0 and self.global_step % self.eval_opt['interval'] == 0:
                 is_best = 0
                 val_acc = self.eval(partition='val')
-                torch.cuda.empty_cache() # Clear cache after evaluation to free up VRAM
-                if val_acc > self.test_acc:
+                torch.cuda.empty_cache()
+
+                # ── Open-World HM validation (Paper Source 6) ─────────────────
+                # Dùng Harmonic Mean (HM) thay val_acc để chọn model tốt nhất.
+                val_hm, val_S, val_U = self.eval_hm(partition='val')
+                torch.cuda.empty_cache()
+
+                if val_hm > self.best_hm:
                     is_best = 1
-                    self.test_acc = val_acc
+                    self.best_hm = val_hm
+                    self.test_acc = val_acc   # giữ val_acc để log tham khảo
                     self.best_step = self.global_step
 
                 # log evaluation info
-                self.log.info('val_acc : {}         step : {} '.format(val_acc, self.global_step))
-                self.log.info('best_val_acc : {}    step : {}'.format( self.test_acc, self.best_step))
+                self.log.info(
+                    'step:{} | val_acc:{:.4f} | HM:{:.4f} S:{:.4f} U:{:.4f} | best_HM:{:.4f} step:{}'.format(
+                        self.global_step, val_acc,
+                        val_hm, val_S, val_U,
+                        self.best_hm, self.best_step))
 
                 # save checkpoints (best and newest)
                 save_checkpoint({
@@ -189,6 +201,7 @@ class AGNNTrainer(object):
                     'enc_module_state_dict': self.enc_module.state_dict(),
                     'gnn_module_state_dict': self.gnn_module.state_dict(),
                     'test_acc': self.test_acc,
+                    'best_hm': self.best_hm,
                     'optimizer': self.optimizer.state_dict(),
                 }, is_best, self.arg.checkpoint_dir)
 
@@ -290,7 +303,7 @@ class AGNNTrainer(object):
                 last_layer_data, second_last_layer_data = backbone_two_stage_initialization(all_data, self.enc_module)
 
                 # run the AGNN model
-                point_similarity, _, _  = self.gnn_module(second_last_layer_data,
+                point_similarity, _  = self.gnn_module(second_last_layer_data,
                                                 last_layer_data,
                                                 node_feature_gd,
                                                 edge_feature_gp,
@@ -325,6 +338,137 @@ class AGNNTrainer(object):
             self.log.info('------------------------------------')
 
         return np.array(query_node_cls_acc_generations).mean()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Open-World HM Validation (Paper Source 6)
+    # ──────────────────────────────────────────────────────────────────────────
+    def eval_hm(self, partition='val', num_episodes=50,
+                num_unknown_ways=5, num_unknown_queries=5):
+        """
+        Chạy N episodes Open World trên tập val, trả về HM = 2SU/(S+U).
+        Dùng để chọn checkpoint tốt nhất thay vì val_acc (Paper Source 6).
+        """
+        import random as _random
+
+        num_ways  = self.eval_opt['num_ways']
+        num_shots = self.eval_opt['num_shots']
+        num_kq    = self.eval_opt['num_queries']
+        device    = self.arg.device
+
+        dataset = self.data_loader[partition].dataset \
+            if hasattr(self.data_loader[partition], 'dataset') else None
+        if dataset is None:
+            self.log.warning('eval_hm: cannot access dataset, returning HM=0')
+            return 0.0, 0.0, 0.0
+
+        all_cls = dataset.full_class_list
+        l2i     = dataset.label2ind
+
+        # Tự động điều chỉnh số lớp Unknown nếu dữ liệu quá ít (Adaptive)
+        actual_unknown_ways = min(num_unknown_ways, len(all_cls) - num_ways)
+        
+        if actual_unknown_ways <= 0:
+            self.log.warning(
+                f'eval_hm: not enough classes ({len(all_cls)}) for '
+                f'{num_ways} ways. Need at least {num_ways + 1} for Open World. Returning HM=0')
+            return 0.0, 0.0, 0.0
+        
+        if actual_unknown_ways < num_unknown_ways:
+            self.log.info(f'eval_hm: data has only {len(all_cls)} classes. Using {actual_unknown_ways} as Unknown.')
+
+        self.enc_module.eval()
+        self.gnn_module.eval()
+
+        def _get_t(idx):
+            item = dataset._get_pil(idx)
+            if getattr(dataset, '_cache_is_tensor', False):
+                return item.float()
+            return dataset.aug_transform(item).float()
+
+        C, H, W = dataset.data_size
+        all_conf, all_pred, all_true, all_is_unk = [], [], [], []
+
+        with torch.no_grad():
+            for _ in range(num_episodes):
+                chosen = _random.sample(all_cls, num_ways + actual_unknown_ways)
+                known_cls   = chosen[:num_ways]
+                unknown_cls = chosen[num_ways:]
+
+                n_sup = num_ways * num_shots
+                n_kq  = num_ways * num_kq
+                n_uq  = actual_unknown_ways * num_unknown_queries
+                n_q   = n_kq + n_uq
+                n_all = n_sup + n_q
+
+                sup_d = torch.empty(1, n_sup, C, H, W, device=device)
+                sup_l = torch.empty(1, n_sup, dtype=torch.float32, device=device)
+                q_d   = torch.empty(1, n_q,   C, H, W, device=device)
+                q_l   = torch.full((1, n_q), -1, dtype=torch.float32)
+
+                for ci, cls in enumerate(known_cls):
+                    pool = l2i[cls]
+                    idx  = _random.sample(pool, num_shots + num_kq)
+                    for k, ii in enumerate(idx[:num_shots]):
+                        sup_d[0, ci*num_shots+k] = _get_t(ii).to(device)
+                        sup_l[0, ci*num_shots+k] = ci
+                    for k, ii in enumerate(idx[num_shots:]):
+                        pos = ci*num_kq + k
+                        q_d[0, pos] = _get_t(ii).to(device)
+                        q_l[0, pos] = ci
+
+                for ui, cls in enumerate(unknown_cls):
+                    pool = l2i[cls]
+                    for k, ii in enumerate(_random.sample(pool, num_unknown_queries)):
+                        q_d[0, n_kq + ui*num_unknown_queries + k] = _get_t(ii).to(device)
+
+                is_unk = [False]*n_kq + [True]*n_uq
+
+                all_data = torch.cat([sup_d, q_d], dim=1)
+                last, second = backbone_two_stage_initialization(all_data, self.enc_module)
+
+                edge = torch.zeros(1, n_all, n_all, device=device)
+                edge[:, :n_sup, :n_sup] = 1.0/n_sup
+                edge[:, n_sup:, :n_sup] = 1.0/n_sup
+                for i in range(n_q):
+                    edge[:, n_sup+i, n_sup+i] = 1.0
+
+                point_sims, _ = self.gnn_module(
+                    second, last,
+                    torch.zeros(1, n_all, num_ways, device=device),
+                    edge, sup_l.long())
+
+                sim_last = point_sims[-1]
+                q2s = sim_last[:, n_sup:, :n_sup]
+                oh  = one_hot_encode(num_ways, sup_l.long(), device)
+                cls_scores = torch.bmm(q2s, oh).squeeze(0).cpu().numpy()
+
+                conf = cls_scores.max(axis=1)
+                pred = cls_scores.argmax(axis=1)
+                true = q_l.squeeze(0).numpy()
+
+                all_conf.extend(conf.tolist())
+                all_pred.extend(pred.tolist())
+                all_true.extend(true.tolist())
+                all_is_unk.extend(is_unk)
+
+        all_conf   = np.array(all_conf)
+        all_pred   = np.array(all_pred)
+        all_true   = np.array(all_true)
+        all_is_unk = np.array(all_is_unk)
+        known_mask   = ~all_is_unk
+        unknown_mask =  all_is_unk
+
+        best_HM, best_S, best_U = 0.0, 0.0, 0.0
+        for g in np.linspace(0.0, 1.0, 101):
+            not_rej = all_conf > g
+            correct = (all_pred == all_true)
+            S  = float((not_rej & correct & known_mask).sum()) / max(known_mask.sum(), 1)
+            U  = float(((all_conf <= g) & unknown_mask).sum()) / max(unknown_mask.sum(), 1)
+            HM = 2*S*U/(S+U) if (S+U) > 0 else 0.0
+            if HM > best_HM:
+                best_HM, best_S, best_U = HM, S, U
+
+        return best_HM, best_S, best_U
 
     def compute_train_loss_pred(self,
                                 all_label_in_edge,
@@ -368,6 +512,23 @@ class AGNNTrainer(object):
             label_flat = query_label.long().contiguous().view(-1)
             query_node_ce_loss.append(self.pred_loss(pred_flat, label_flat).mean())
 
+        # ── Feasibility Margin Loss (Paper Source 6) ───────────────────────────
+        # Đẩy gt score cách xa best-wrong score ít nhất một margin.
+        # Áp dụng trên layer cuối (generation thứ -1) để không làm nhiễu các layer đầu.
+        lambda_f = self.config.get('lambda_feasibility', 0.1)
+        if lambda_f > 0:
+            pred_last = query_node_pred_generations[-1]  # [B, nq, nw]
+            # Điểm của lớp đúng: [B, nq]
+            gt_score = pred_last.gather(2, query_label.long().unsqueeze(2)).squeeze(2)
+            # Điểm cao nhất của lớp sai: đặt gt thành -inf rồi lấy max
+            wrong_scores = pred_last.clone()
+            wrong_scores.scatter_(2, query_label.long().unsqueeze(2), -1e9)
+            best_wrong = wrong_scores.max(dim=2)[0]  # [B, nq]
+            # Hinge loss: max(0, best_wrong - gt_score + margin)
+            feasibility_loss = torch.relu(best_wrong - gt_score + self.loss_margin).mean()
+        else:
+            feasibility_loss = torch.tensor(0.0, device=self.arg.device)
+
         # ── Train accuracy ────────────────────────────────────────────────────
         query_node_acc_generations = [
             torch.eq(torch.max(query_node_pred, -1)[1], query_label.long()).float().mean()
@@ -382,6 +543,7 @@ class AGNNTrainer(object):
             total_loss += [query_node_ce_loss[l].view(-1) * self.config['generation_weight']]
         total_loss += [query_node_ce_loss[-1].view(-1) * 1.0]
         total_loss = torch.mean(torch.cat(total_loss, 0))
+        total_loss = total_loss + lambda_f * feasibility_loss
 
         return total_loss, query_node_acc_generations, query_node_ce_loss
 
@@ -591,7 +753,9 @@ def main():
     elif config['backbone'] == 'resnet50':
         enc_module = ResNet50Pretrained(emb_size=config['emb_size'])
         print('Backbone: ResNet50 Pretrained ImageNet')
-
+    elif config['backbone'] == 'last_vit':
+        enc_module = LaStViTBackbone(emb_size=config['emb_size'], pretrained=True)
+        print('Backbone: LaSt-ViT (DenseViT)')
     elif config['backbone'] == 'convnet':
         enc_module = ConvNet(emb_size=config['emb_size'], cifar_flag=cifar_flag)
         print('Backbone: ConvNet')
@@ -699,17 +863,16 @@ def main():
                              f'Các keys hiện có: {list(ckpt.keys())}')
                 exit()
 
-        # Strict=True — keys phải khớp hoàn toàn với ResNet12
+        # Nạp linh hoạt qua load_flexible để hỗ trợ cả single-GPU và multi-GPU (DataParallel)
         try:
-            enc_module.load_state_dict(backbone_state, strict=True)
+            load_flexible(enc_module, backbone_state)
             logger.info(
-                f'✓ Pretrained backbone loaded thành công (strict=True, '
-                f'{len(backbone_state)} keys). '
+                f'✓ Pretrained backbone loaded thành công vào enc_module '
+                f'({len(backbone_state)} keys, DataParallel={isinstance(enc_module, nn.DataParallel)}). '
                 f'Checkpoint info: val_acc={ckpt.get("val_acc", "N/A")}')
-        except RuntimeError as e:
-            logger.warning(f'Load strict=True thất bại do lệch keys. Thử load với strict=False...')
-            enc_module.load_state_dict(backbone_state, strict=False)
-            logger.info('✓ Pretrained backbone loaded thành công với strict=False.')
+        except Exception as e:
+            logger.error(f'Lỗi khi nạp pretrained backbone qua load_flexible: {e}')
+            exit()
     elif args_opt.pretrain_path and agnn_ckpt_exists:
         logger.info(
             'pretrain_path được chỉ định nhưng đã có AGNN checkpoint '
