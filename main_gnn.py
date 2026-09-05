@@ -20,7 +20,7 @@ import shutil
 
 
 class AGNNTrainer(object):
-    def __init__(self, enc_module, gnn_module, data_loader, log, arg, config, best_step):
+    def __init__(self, enc_module, gnn_module, data_loader, log, arg, config, best_step, best_val_acc=0.0):
         """
         The Trainer of AGNN model
         :param enc_module: backbone network (Conv4, ResNet12, ResNet18, WRN)
@@ -30,9 +30,10 @@ class AGNNTrainer(object):
         :param arg: command line arguments
         :param config: model configurations
         :param best_step: starting step (step at best eval acc or 0 if starts from scratch)
+        :param best_val_acc: initial best val accuracy (when resuming from checkpoint)
         """
-        # best_hm: Harmonic Mean (S, U) dùng để chọn checkpoint tốt nhất (Paper Source 6)
-        self.best_hm = 0.0
+        # Best validation accuracy for saving best checkpoint (Closed-World)
+        self.best_val_acc = best_val_acc
 
         self.arg = arg
         self.config = config
@@ -177,31 +178,27 @@ class AGNNTrainer(object):
                 val_acc = self.eval(partition='val')
                 torch.cuda.empty_cache()
 
-                # ── Open-World HM validation (Paper Source 6) ─────────────────
-                # Dùng Harmonic Mean (HM) thay val_acc để chọn model tốt nhất.
-                val_hm, val_S, val_U = self.eval_hm(partition='val')
-                torch.cuda.empty_cache()
-
-                if val_hm > self.best_hm:
+                # Closed-World: Dùng val_acc để chọn và lưu model_best.pth.tar
+                if val_acc > self.best_val_acc:
                     is_best = 1
-                    self.best_hm = val_hm
-                    self.test_acc = val_acc   # giữ val_acc để log tham khảo
+                    self.best_val_acc = val_acc
+                    self.test_acc = val_acc
                     self.best_step = self.global_step
 
                 # log evaluation info
                 self.log.info(
-                    'step:{} | val_acc:{:.4f} | HM:{:.4f} S:{:.4f} U:{:.4f} | best_HM:{:.4f} step:{}'.format(
+                    'step:{} | val_acc:{:.4f} | best_val_acc:{:.4f} (step:{})'.format(
                         self.global_step, val_acc,
-                        val_hm, val_S, val_U,
-                        self.best_hm, self.best_step))
+                        self.best_val_acc, self.best_step))
 
                 # save checkpoints (best and newest)
                 save_checkpoint({
                     'iteration': self.global_step,
                     'enc_module_state_dict': self.enc_module.state_dict(),
                     'gnn_module_state_dict': self.gnn_module.state_dict(),
+                    'val_acc': val_acc,
+                    'best_val_acc': self.best_val_acc,
                     'test_acc': self.test_acc,
-                    'best_hm': self.best_hm,
                     'optimizer': self.optimizer.state_dict(),
                 }, is_best, self.arg.checkpoint_dir)
 
@@ -339,136 +336,7 @@ class AGNNTrainer(object):
 
         return np.array(query_node_cls_acc_generations).mean()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Open-World HM Validation (Paper Source 6)
-    # ──────────────────────────────────────────────────────────────────────────
-    def eval_hm(self, partition='val', num_episodes=50,
-                num_unknown_ways=5, num_unknown_queries=5):
-        """
-        Chạy N episodes Open World trên tập val, trả về HM = 2SU/(S+U).
-        Dùng để chọn checkpoint tốt nhất thay vì val_acc (Paper Source 6).
-        """
-        import random as _random
 
-        num_ways  = self.eval_opt['num_ways']
-        num_shots = self.eval_opt['num_shots']
-        num_kq    = self.eval_opt['num_queries']
-        device    = self.arg.device
-
-        dataset = self.data_loader[partition].dataset \
-            if hasattr(self.data_loader[partition], 'dataset') else None
-        if dataset is None:
-            self.log.warning('eval_hm: cannot access dataset, returning HM=0')
-            return 0.0, 0.0, 0.0
-
-        all_cls = dataset.full_class_list
-        l2i     = dataset.label2ind
-
-        # Tự động điều chỉnh số lớp Unknown nếu dữ liệu quá ít (Adaptive)
-        actual_unknown_ways = min(num_unknown_ways, len(all_cls) - num_ways)
-        
-        if actual_unknown_ways <= 0:
-            self.log.warning(
-                f'eval_hm: not enough classes ({len(all_cls)}) for '
-                f'{num_ways} ways. Need at least {num_ways + 1} for Open World. Returning HM=0')
-            return 0.0, 0.0, 0.0
-        
-        if actual_unknown_ways < num_unknown_ways:
-            self.log.info(f'eval_hm: data has only {len(all_cls)} classes. Using {actual_unknown_ways} as Unknown.')
-
-        self.enc_module.eval()
-        self.gnn_module.eval()
-
-        def _get_t(idx):
-            item = dataset._get_pil(idx)
-            if getattr(dataset, '_cache_is_tensor', False):
-                return item.float()
-            return dataset.aug_transform(item).float()
-
-        C, H, W = dataset.data_size
-        all_conf, all_pred, all_true, all_is_unk = [], [], [], []
-
-        with torch.no_grad():
-            for _ in range(num_episodes):
-                chosen = _random.sample(all_cls, num_ways + actual_unknown_ways)
-                known_cls   = chosen[:num_ways]
-                unknown_cls = chosen[num_ways:]
-
-                n_sup = num_ways * num_shots
-                n_kq  = num_ways * num_kq
-                n_uq  = actual_unknown_ways * num_unknown_queries
-                n_q   = n_kq + n_uq
-                n_all = n_sup + n_q
-
-                sup_d = torch.empty(1, n_sup, C, H, W, device=device)
-                sup_l = torch.empty(1, n_sup, dtype=torch.float32, device=device)
-                q_d   = torch.empty(1, n_q,   C, H, W, device=device)
-                q_l   = torch.full((1, n_q), -1, dtype=torch.float32)
-
-                for ci, cls in enumerate(known_cls):
-                    pool = l2i[cls]
-                    idx  = _random.sample(pool, num_shots + num_kq)
-                    for k, ii in enumerate(idx[:num_shots]):
-                        sup_d[0, ci*num_shots+k] = _get_t(ii).to(device)
-                        sup_l[0, ci*num_shots+k] = ci
-                    for k, ii in enumerate(idx[num_shots:]):
-                        pos = ci*num_kq + k
-                        q_d[0, pos] = _get_t(ii).to(device)
-                        q_l[0, pos] = ci
-
-                for ui, cls in enumerate(unknown_cls):
-                    pool = l2i[cls]
-                    for k, ii in enumerate(_random.sample(pool, num_unknown_queries)):
-                        q_d[0, n_kq + ui*num_unknown_queries + k] = _get_t(ii).to(device)
-
-                is_unk = [False]*n_kq + [True]*n_uq
-
-                all_data = torch.cat([sup_d, q_d], dim=1)
-                last, second = backbone_two_stage_initialization(all_data, self.enc_module)
-
-                edge = torch.zeros(1, n_all, n_all, device=device)
-                edge[:, :n_sup, :n_sup] = 1.0/n_sup
-                edge[:, n_sup:, :n_sup] = 1.0/n_sup
-                for i in range(n_q):
-                    edge[:, n_sup+i, n_sup+i] = 1.0
-
-                point_sims, _ = self.gnn_module(
-                    second, last,
-                    torch.zeros(1, n_all, num_ways, device=device),
-                    edge, sup_l.long())
-
-                sim_last = point_sims[-1]
-                q2s = sim_last[:, n_sup:, :n_sup]
-                oh  = one_hot_encode(num_ways, sup_l.long(), device)
-                cls_scores = torch.bmm(q2s, oh).squeeze(0).cpu().numpy()
-
-                conf = cls_scores.max(axis=1)
-                pred = cls_scores.argmax(axis=1)
-                true = q_l.squeeze(0).numpy()
-
-                all_conf.extend(conf.tolist())
-                all_pred.extend(pred.tolist())
-                all_true.extend(true.tolist())
-                all_is_unk.extend(is_unk)
-
-        all_conf   = np.array(all_conf)
-        all_pred   = np.array(all_pred)
-        all_true   = np.array(all_true)
-        all_is_unk = np.array(all_is_unk)
-        known_mask   = ~all_is_unk
-        unknown_mask =  all_is_unk
-
-        best_HM, best_S, best_U = 0.0, 0.0, 0.0
-        for g in np.linspace(0.0, 1.0, 101):
-            not_rej = all_conf > g
-            correct = (all_pred == all_true)
-            S  = float((not_rej & correct & known_mask).sum()) / max(known_mask.sum(), 1)
-            U  = float(((all_conf <= g) & unknown_mask).sum()) / max(unknown_mask.sum(), 1)
-            HM = 2*S*U/(S+U) if (S+U) > 0 else 0.0
-            if HM > best_HM:
-                best_HM, best_S, best_U = HM, S, U
-
-        return best_HM, best_S, best_U
 
     def compute_train_loss_pred(self,
                                 all_label_in_edge,
@@ -798,6 +666,7 @@ def main():
 
     if not agnn_ckpt_exists:
         best_step = 0
+        best_val_acc = 0.0
         logger.info('no checkpoint found at: {}, starting from step 0'.format(args_opt.checkpoint_dir))
     else:
             logger.info('find a checkpoint, loading checkpoint from {}'.format(
@@ -808,13 +677,14 @@ def main():
 
             logger.info('best model pack loaded')
             best_step = best_checkpoint['iteration']
+            best_val_acc = best_checkpoint.get('best_val_acc', best_checkpoint.get('val_acc', best_checkpoint.get('test_acc', 0.0)))
             
             # Nạp trọng số linh hoạt cho cả Encoder và GNN
             load_flexible(enc_module, best_checkpoint['enc_module_state_dict'])
             load_flexible(gnn_module, best_checkpoint['gnn_module_state_dict'])
             
-            logger.info('current best test accuracy is: {}, at step: {}'.format(
-                best_checkpoint['test_acc'], best_step))
+            logger.info('current best val accuracy is: {}, at step: {}'.format(
+                best_val_acc, best_step))
 
     # ── Load pretrained backbone (chỉ khi chưa có AGNN checkpoint) ─────────────
     # Nếu đã có AGNN checkpoint thì bỏ qua pretrain_path vì AGNN checkpoint
@@ -936,7 +806,8 @@ def main():
                            log=logger,
                            arg=args_opt,
                            config=config,
-                           best_step=best_step)
+                           best_step=best_step,
+                           best_val_acc=best_val_acc)
 
     if args_opt.mode == 'train':
         trainer.train()
